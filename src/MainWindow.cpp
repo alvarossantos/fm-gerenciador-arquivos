@@ -13,6 +13,7 @@
 #include <QPaintEvent>
 #include <QResizeEvent>
 #include <QSettings>
+#include <QShortcut>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTabBar>
@@ -59,13 +60,19 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_forward->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
     m_up->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
 
-    m_pathBar = new QWidget;
+    m_pathContainer = new QWidget;
+    auto *pathContainerLayout = new QHBoxLayout(m_pathContainer);
+    pathContainerLayout->setContentsMargins(0, 0, 0, 0);
+    pathContainerLayout->setSpacing(0);
+    m_pathContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+
+    m_pathBar = new QWidget(m_pathContainer);
     m_pathLayout = new QHBoxLayout(m_pathBar);
     m_pathLayout->setContentsMargins(4, 0, 4, 0);
     m_pathLayout->setSpacing(2);
     m_pathBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     m_pathBar->setMinimumWidth(80);
-    tb->addWidget(m_pathBar);
+    pathContainerLayout->addWidget(m_pathBar);
 
     m_overflow = new QToolButton(m_pathBar);
     m_overflow->setObjectName(QStringLiteral("breadcrumbOverflow"));
@@ -75,10 +82,12 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_overflow->setMenu(new QMenu(m_overflow));
     m_overflow->hide();
 
-    m_pathEdit = new QLineEdit;
+    m_pathEdit = new QLineEdit(m_pathContainer);
+    m_pathEdit->setObjectName(QStringLiteral("pathEdit"));
     m_pathEdit->setClearButtonEnabled(true);
     m_pathEdit->hide();
-    tb->addWidget(m_pathEdit);
+    pathContainerLayout->addWidget(m_pathEdit);
+    tb->addWidget(m_pathContainer);
 
     m_iconsAct = tb->addAction(QIcon::fromTheme("view-list-icons"), tr("Visão em ícones"));
     m_iconsAct->setCheckable(true);
@@ -98,12 +107,7 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     auto *focusPath = new QAction(this);
     focusPath->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
     addAction(focusPath);
-    connect(focusPath, &QAction::triggered, this, [this] {
-        m_pathBar->hide();
-        m_pathEdit->show();
-        m_pathEdit->setFocus();
-        m_pathEdit->selectAll();
-    });
+    connect(focusPath, &QAction::triggered, this, &MainWindow::beginPathEdit);
 
     auto *closeTabAct = new QAction(this);
     closeTabAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
@@ -131,15 +135,16 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
         if (p.startsWith(QLatin1Char('~')))
             p.replace(0, 1, QDir::homePath());
         if (auto *t = currentTab()) {
-            t->goTo(p);
-            t->setFocus();
+            if (t->goTo(p))
+                endPathEdit();
         }
     });
+
+    auto *escEdit = new QShortcut(QKeySequence(Qt::Key_Escape), m_pathEdit);
+    escEdit->setContext(Qt::WidgetShortcut);
+    connect(escEdit, &QShortcut::activated, this, &MainWindow::endPathEdit);
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
-    connect(m_tabs, &QTabWidget::currentChanged, this, [this] {
-        rebuildBreadcrumb();
-        syncToolbar();
-    });
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this] { endPathEdit(); });
 
     // "Nova aba" abre na pasta da aba atual
     connect(newTab, &QAction::triggered, this, [this] {
@@ -212,6 +217,28 @@ void MainWindow::syncToolbar()
     m_forward->setEnabled(t->canGoForward());
     m_pathEdit->setText(t->currentPath());
     setWindowTitle(QStringLiteral("%1 — fm").arg(t->currentPath()));
+}
+
+void MainWindow::beginPathEdit()
+{
+    FileTab *t = currentTab();
+    if (!t)
+        return;
+    m_pathEdit->setText(t->currentPath());
+    m_pathBar->hide();
+    m_pathEdit->show();
+    m_pathEdit->setFocus();
+    m_pathEdit->selectAll();
+}
+
+void MainWindow::endPathEdit()
+{
+    m_pathEdit->hide();
+    m_pathBar->show();
+    rebuildBreadcrumb();
+    syncToolbar();
+    if (auto *t = currentTab())
+        t->setFocus();
 }
 
 void MainWindow::navigateBreadcrumb(const QString &path)

@@ -31,8 +31,11 @@ private:
     void syncToolbar();
     void navigateBreadcrumb(const QString &path);
     void rebuildBreadcrumb();
+    void beginPathEdit();
+    void endPathEdit();
 
     QTabWidget *m_tabs;
+    QWidget *m_pathContainer;
     QWidget *m_pathBar;
     QHBoxLayout *m_pathLayout;
     QLineEdit *m_pathEdit;

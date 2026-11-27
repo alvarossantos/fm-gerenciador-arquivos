@@ -4,8 +4,11 @@
 #include <QApplication>
 #include <QDir>
 #include <QListWidget>
+#include <QKeySequence>
+#include <QLineEdit>
 #include <QMenu>
 #include <QScopeGuard>
+#include <QStatusBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -55,6 +58,8 @@ private slots:
     void breadcrumbFollowsActiveTab();
     void breadcrumbClickThenBackUsesActiveTabHistory();
     void overflowMenuKeepsCurrentAndNavigates();
+    void pathEditKeepsInvalidTextAndEscRestores();
+    void tabChangeDiscardsPendingEdit();
 };
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
@@ -283,6 +288,101 @@ void MainWindowTest::overflowMenuKeepsCurrentAndNavigates()
 
     for (QToolButton *b : breadcrumbButtons(&w))
         QVERIFY(!b->property("path").toString().isEmpty());
+}
+
+void MainWindowTest::pathEditKeepsInvalidTextAndEscRestores()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    const QString project = QDir(root.path()).filePath(QStringLiteral("Documentos/projeto"));
+    QVERIFY(QDir().mkpath(home));
+    QVERIFY(QDir().mkpath(project));
+    setPlacesForTests({home});
+    QScopeGuard restore([] { setPlacesForTests({}); });
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *tab = static_cast<FileTab *>(tabs->widget(0));
+    auto *edit = w.findChild<QLineEdit *>(QStringLiteral("pathEdit"));
+    QVERIFY(edit);
+    QVERIFY(edit->isHidden());
+
+    QTest::keyClick(&w, Qt::Key_L, Qt::ControlModifier);
+    QVERIFY(edit->isVisible());
+    QVERIFY(edit->hasFocus());
+    QCOMPARE(edit->selectedText(), edit->text());
+
+    QTest::keyClicks(edit, project);
+    QTest::keyClick(edit, Qt::Key_Return);
+    QApplication::processEvents();
+    QCOMPARE(tab->currentPath(), project);
+    QVERIFY(edit->isHidden());
+    QCOMPARE(lastBreadcrumbPath(&w), project);
+
+    const bool backBefore = tab->canGoBack();
+    QTest::keyClick(&w, Qt::Key_L, Qt::ControlModifier);
+    const QString invalid = root.path() + QStringLiteral("/nao-existe-fm");
+    QTest::keyClicks(edit, invalid);
+    QTest::keyClick(edit, Qt::Key_Return);
+    QApplication::processEvents();
+    QVERIFY(edit->isVisible());
+    QCOMPARE(edit->text(), invalid);
+    QCOMPARE(tab->currentPath(), project);
+    QCOMPARE(tab->canGoBack(), backBefore);
+    QVERIFY(w.statusBar()->currentMessage().contains(QStringLiteral("Pasta inválida")));
+
+    QTest::keyClick(edit, Qt::Key_Escape);
+    QApplication::processEvents();
+    QVERIFY(edit->isHidden());
+    QCOMPARE(lastBreadcrumbPath(&w), project);
+}
+
+void MainWindowTest::tabChangeDiscardsPendingEdit()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    const QString downloadTest = QDir(root.path()).filePath(QStringLiteral("Downloads/teste"));
+    QVERIFY(QDir().mkpath(home));
+    QVERIFY(QDir().mkpath(downloadTest));
+    setPlacesForTests({home});
+    QScopeGuard restore([] { setPlacesForTests({}); });
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *tab0 = static_cast<FileTab *>(tabs->widget(0));
+    auto *edit = w.findChild<QLineEdit *>(QStringLiteral("pathEdit"));
+    QVERIFY(edit);
+
+    QAction *newTab = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTab);
+    newTab->trigger();
+    auto *tab1 = static_cast<FileTab *>(tabs->widget(1));
+    tab1->goTo(downloadTest);
+    tabs->setCurrentIndex(0);
+    QApplication::processEvents();
+
+    QTest::keyClick(&w, Qt::Key_L, Qt::ControlModifier);
+    QTest::keyClicks(edit, downloadTest);
+    QCOMPARE(edit->text(), downloadTest);
+    tabs->setCurrentIndex(1);
+    QApplication::processEvents();
+
+    QVERIFY(edit->isHidden());
+    QCOMPARE(lastBreadcrumbPath(&w), downloadTest);
+    QCOMPARE(edit->text(), downloadTest);
+
+    QTest::keyClick(&w, Qt::Key_Return);
+    QApplication::processEvents();
+    QCOMPARE(tab0->currentPath(), home);
+    QCOMPARE(tab1->currentPath(), downloadTest);
 }
 
 QTEST_MAIN(MainWindowTest)
