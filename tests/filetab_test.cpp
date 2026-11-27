@@ -286,6 +286,7 @@ private slots:
     void contextMenuTargetOnIcons();
     void contextMenuPreservesMultiSelection();
     void contextMenuOutsideSelectionReplacesTarget();
+    void f2UsesCurrentIndexWithMultiSelection();
     void menuActionsUseFrozenTarget();
     void copyPathActionsWriteTextToClipboard();
     void contextMenuCompositionByTarget();
@@ -295,8 +296,10 @@ private slots:
     void openWithLaunchFailureReportsStatus();
     void openWithCancelStartsNothing();
     void openWithWithoutAssociationsOffersChooser();
+    void orphanDesktopApplicationReportsStatus();
     void terminalUsesTargetDirectory();
     void emptyAreaTerminalUsesCurrentDirectory();
+    void missingTerminalReportsStatus();
     void propertiesOfCurrentFolder();
     void refreshRereadsWithoutWatcherAndKeepsHistory();
     void mimeHookResetRestoresAsyncQueries();
@@ -676,6 +679,38 @@ void FileTabTest::contextMenuOutsideSelectionReplacesTarget()
     view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     QCOMPARE(captureContextTargets(tab, view, gamma), QStringList{QDir(root).filePath("gamma.txt")});
+}
+
+void FileTabTest::f2UsesCurrentIndexWithMultiSelection()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) >= 3, 3000);
+
+    const QModelIndex alpha = findRowNamed(view, QStringLiteral("alpha.txt"));
+    const QModelIndex beta = findRowNamed(view, QStringLiteral("beta.txt"));
+    QVERIFY(alpha.isValid() && beta.isValid());
+    view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->selectionModel()->select(beta, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    view->selectionModel()->setCurrentIndex(beta, QItemSelectionModel::NoUpdate);
+
+    // A primeira linha selecionada é alpha.txt, mas o item corrente é beta.txt.
+    QCOMPARE(view->selectionModel()->selectedRows().first().data().toString(), QStringLiteral("alpha.txt"));
+    QCOMPARE(view->selectionModel()->currentIndex().data().toString(), QStringLiteral("beta.txt"));
+
+    tab.setFocus();
+    QTest::keyClick(&tab, Qt::Key_F2);
+
+    QTRY_VERIFY_WITH_TIMEOUT(view->findChild<QLineEdit *>() != nullptr, 2000);
+    QLineEdit *editor = view->findChild<QLineEdit *>();
+    QVERIFY2(editor->text() == QStringLiteral("beta.txt"),
+             qPrintable(QStringLiteral("editor abriu em: %1").arg(editor->text())));
 }
 
 void FileTabTest::menuActionsUseFrozenTarget()
@@ -1154,6 +1189,37 @@ void FileTabTest::openWithWithoutAssociationsOffersChooser()
     QCOMPARE(labels, QStringList{QStringLiteral("Escolher executável…")});
 }
 
+void FileTabTest::orphanDesktopApplicationReportsStatus()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+
+    setMimeQueryForTests({QStringLiteral("fantasma-inexistente.desktop")});
+    const auto resetMime = qScopeGuard([] { clearMimeQueryForTestsForTests(); });
+
+    FileTab tab(root);
+    QSignalSpy spy(&tab, &FileTab::statusMessage);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    const QModelIndex row = findRowNamed(view, QStringLiteral("alpha.txt"));
+    QVERIFY(row.isValid());
+
+    runMenuAction(QStringList{QStringLiteral("Abrir com…"),
+                              QStringLiteral("fantasma-inexistente.desktop")});
+    openContextMenu(view, row);
+
+    const auto reported = [&spy] {
+        for (int i = 0; i < spy.count(); ++i)
+            if (spy.at(i).value(0).toString() == QStringLiteral("Aplicativo não encontrado"))
+                return true;
+        return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(reported(), 3000);
+}
+
 void FileTabTest::terminalUsesTargetDirectory()
 {
     QTemporaryDir dir;
@@ -1233,6 +1299,38 @@ void FileTabTest::emptyAreaTerminalUsesCurrentDirectory()
     QCOMPARE(call.program, QFileInfo(terminal).absoluteFilePath());
     QVERIFY2(call.args.isEmpty(), qPrintable(QStringLiteral("args: %1").arg(call.args.join(QLatin1Char(' ')))));
     QCOMPARE(call.cwd, root);
+}
+
+void FileTabTest::missingTerminalReportsStatus()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString bin = QDir(dir.path()).filePath(QStringLiteral("bin-empty"));
+    QVERIFY(QDir().mkpath(bin));
+    const QByteArray oldPath = qgetenv("PATH");
+    qputenv("PATH", bin.toUtf8());
+    const auto restorePath = qScopeGuard([oldPath] { qputenv("PATH", oldPath); });
+    setLaunchHookForTests({});
+
+    const QString root = contextTestRoot(dir);
+    FileTab tab(root);
+    QSignalSpy spy(&tab, &FileTab::statusMessage);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QVERIFY2(!view->indexAt(QPoint(5, 400)).isValid(), "o ponto do menu deve estar na área vazia");
+
+    runMenuAction(QStringList{QStringLiteral("Abrir terminal aqui")});
+    openContextMenu(view);
+
+    const auto reported = [&spy] {
+        for (int i = 0; i < spy.count(); ++i)
+            if (spy.at(i).value(0).toString() == QStringLiteral("Nenhum terminal disponível"))
+                return true;
+        return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(reported(), 3000);
 }
 
 void FileTabTest::propertiesOfCurrentFolder()
@@ -1387,6 +1485,11 @@ void FileTabTest::mimeHookResetRestoresAsyncQueries()
 {
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
+
+    // Sema um id obsoleto e confirma que o reset devolve as consultas reais.
+    setMimeQueryForTests({QStringLiteral("stale.desktop")});
+    clearMimeQueryForTestsForTests();
+
     const QString apps = QDir(dir.path()).filePath(QStringLiteral("applications"));
     const QString bin = QDir(dir.path()).filePath(QStringLiteral("bin"));
     QVERIFY(QDir().mkpath(apps));

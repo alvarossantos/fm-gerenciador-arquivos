@@ -431,7 +431,7 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     sc(QKeySequence::Paste, [this] { paste(); });
     sc(QKeySequence(Qt::Key_Delete), [this] { trashSelected(selectedPaths()); });
     sc(QKeySequence(Qt::SHIFT | Qt::Key_Delete), [this] { deleteSelected(selectedPaths()); });
-    sc(QKeySequence(Qt::Key_F2), [this] { renameCurrent(selectedPaths().value(0)); });
+    sc(QKeySequence(Qt::Key_F2), [this] { renameCurrent(pathOf(currentView()->currentIndex())); });
 
     goTo(startPath);
 }
@@ -995,8 +995,10 @@ void FileTab::addOpenWithMenu(QMenu *menu, const QString &path)
 
 void FileTab::openWithDesktop(const QString &desktop, const QString &path)
 {
-    if (desktop.isEmpty() || path.isEmpty())
+    if (desktop.isEmpty() || path.isEmpty()) {
+        emit statusMessage(tr("Aplicativo não encontrado"));
         return;
+    }
     launchProgram(QStringLiteral("gio"), QStringList{QStringLiteral("launch"), desktop, path}, QString());
 }
 
@@ -1177,8 +1179,10 @@ void FileTab::showProperties(const QString &path)
 void FileTab::openTerminal(const QString &dir)
 {
     const QString program = terminalProgram();
-    if (program.isEmpty())
+    if (program.isEmpty()) {
+        emit statusMessage(tr("Nenhum terminal disponível"));
         return;
+    }
 
     if (launchHook) {
         if (!launchHook(program, QStringList(), dir))

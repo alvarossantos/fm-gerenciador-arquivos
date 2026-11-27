@@ -86,7 +86,7 @@ Expected: FAIL — "ação do menu não encontrada".
 
 - [ ] **Step 3: Implementar**
 
-Refatorar as quatro assinaturas para receber o alvo; nos atalhos (`FileTab.cpp:299-304`) passar `selectedPaths()`; `renameCurrent(path)` localiza o índice via `m_proxy->mapFromSource(m_model->index(path))` e chama `currentView()->edit(...)`. Nos lambdas do menu, capturar `sel`/`first` por valor e passar às funções. `copyPathsToClipboard` cria `QMimeData` com `setText(paths.join(QLatin1Char('\n')))`. Ligar `Copiar caminho` ao menu de arquivo e de pasta e `Copiar caminhos` ao menu de seleção múltipla já nesta task, com `sel`/`first` capturados.
+Refatorar as quatro assinaturas para receber o alvo; nos atalhos (`FileTab.cpp:299-304`) passar `selectedPaths()`, exceto F2, que passa `pathOf(currentView()->currentIndex())` para renomear sempre o item corrente, mesmo com multisseleção; `renameCurrent(path)` localiza o índice via `m_proxy->mapFromSource(m_model->index(path))` e chama `currentView()->edit(...)`. Nos lambdas do menu, capturar `sel`/`first` por valor e passar às funções. `copyPathsToClipboard` cria `QMimeData` com `setText(paths.join(QLatin1Char('\n')))`. Ligar `Copiar caminho` ao menu de arquivo e de pasta e `Copiar caminhos` ao menu de seleção múltipla já nesta task, com `sel`/`first` capturados.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
@@ -154,7 +154,7 @@ Expected: FAIL — submenu ausente.
 
 - [ ] **Step 3: Implementar**
 
-Em `FileTab`, guardar os seis ponteiros e implementar `addViewMenu(QMenu *)`: duas ações `checkable` locais (`Lista detalhada`, `Grade de ícones`) sem atalho, com `setChecked` conforme `m_iconsAct->isChecked()`; `triggered` aplica `m_iconsAct->setChecked(modoDesejado)` (nunca `toggle()`). Inserir as quatro/cinco `QAction`s injetadas diretamente (prévia, ocultos, zoom in/out/reset) com separador antes de prévia e antes do zoom. Em `MainWindow::addTab`, chamar `tab->setViewActions(m_iconsAct, m_previewAct, m_hiddenAct, m_zoomInAct, m_zoomOutAct, m_zoomResetAct)` antes de aplicar os estados. Ligar o submenu `Exibir` ao menu da área vazia nesta task; as demais composições só o recebem na Task 8.
+Em `FileTab`, guardar os seis ponteiros e implementar `addViewMenu(QMenu *)`: duas ações `checkable` locais (`Lista detalhada`, `Grade de ícones`) sem atalho, com `setChecked` conforme `m_iconsAct->isChecked()`; `triggered` aplica `m_iconsAct->setChecked(modoDesejado)` (nunca `toggle()`). Inserir as quatro/cinco `QAction`s injetadas diretamente (prévia, ocultos, zoom in/out/reset) com separador antes de prévia e antes do zoom. Em `MainWindow::addTab`, chamar `tab->setViewActions(m_iconsAct, m_previewAct, m_hiddenAct, m_zoomInAct, m_zoomOutAct, m_zoomResetAct)` antes de aplicar os estados. Ligar o submenu `Exibir` **somente** ao menu da área vazia nesta task; conforme a spec, nenhuma das demais composições recebe `Exibir` — nem na Task 8.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
