@@ -884,7 +884,7 @@ void FileTab::addOpenWithMenu(QMenu *menu, const QString &path)
                                                       : QFileDialog::getOpenFileName(
                                                             this, tr("Escolher executável…"), m_path);
         if (!program.isEmpty())
-            launchProgram(program, QStringList{ path }, QString());
+            launchProgram(program, QStringList{ path }, QString(), true);
     });
 
     const auto fill = [this, popup, chooser, path](const QStringList &ids) {
@@ -1002,13 +1002,20 @@ void FileTab::openWithDesktop(const QString &desktop, const QString &path)
     launchProgram(QStringLiteral("gio"), QStringList{QStringLiteral("launch"), desktop, path}, QString());
 }
 
-void FileTab::launchProgram(const QString &program, const QStringList &args, const QString &cwd)
+void FileTab::launchProgram(const QString &program, const QStringList &args, const QString &cwd,
+                            bool detached)
 {
     if (program.isEmpty())
         return;
 
     if (launchHook) {
         if (!launchHook(program, args, cwd))
+            emit statusMessage(tr("Falha ao abrir o arquivo"));
+        return;
+    }
+
+    if (detached) {
+        if (!QProcess::startDetached(program, args, cwd))
             emit statusMessage(tr("Falha ao abrir o arquivo"));
         return;
     }

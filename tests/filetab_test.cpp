@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <functional>
+#include <memory>
 
 #include <QApplication>
 #include <QClipboard>
@@ -295,6 +296,7 @@ private slots:
     void gioLaunchPassesAccentedPathToDesktopApp();
     void openWithLaunchFailureReportsStatus();
     void openWithCancelStartsNothing();
+    void executableChooserLaunchSurvivesTabClose();
     void openWithWithoutAssociationsOffersChooser();
     void orphanDesktopApplicationReportsStatus();
     void terminalUsesTargetDirectory();
@@ -1155,6 +1157,82 @@ void FileTabTest::openWithCancelStartsNothing()
     QVERIFY(chooserCalled);
     QVERIFY2(!launched, "cancelar o escolhedor não deve iniciar launch");
     QVERIFY(call.program.isEmpty());
+}
+
+void FileTabTest::executableChooserLaunchSurvivesTabClose()
+{
+    if (!QFileInfo::exists(QStringLiteral("/proc")))
+        QSKIP("sem /proc não é possível observar o processo lançado");
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    const QString file = QDir(root).filePath(QStringLiteral("alpha.txt"));
+    const QString script = QDir(dir.path()).filePath(QStringLiteral("app.sh"));
+    const QString pidFile = QDir(dir.path()).filePath(QStringLiteral("pid"));
+    {
+        QFile f(script);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QStringLiteral("#!/bin/sh\nprintf '%s\\n' \"$$\" > \"%1\"\nexec sleep 30\n")
+                    .arg(pidFile).toUtf8());
+    }
+    QVERIFY(QFile::setPermissions(script, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner
+                                   | QFile::ReadGroup | QFile::ExeGroup | QFile::ReadOther | QFile::ExeOther));
+
+    QString pid;
+    const auto killApp = qScopeGuard([&pid] {
+        if (pid.isEmpty())
+            return;
+        QProcess::execute(QStringLiteral("kill"), QStringList{QStringLiteral("-TERM"), pid});
+    });
+
+    setMimeQueryForTests({});
+    setExecutableChooserForTests([script] { return script; });
+    setLaunchHookForTests({});
+    const auto resetMime = qScopeGuard([] { clearMimeQueryForTestsForTests(); });
+    const auto resetChooser = qScopeGuard([] { setExecutableChooserForTests({}); });
+    const auto resetLaunch = qScopeGuard([] { setLaunchHookForTests({}); });
+
+    auto tab = std::make_unique<FileTab>(root);
+    tab->show();
+    QVERIFY(QTest::qWaitForWindowExposed(tab.get()));
+    auto *view = tab->findChild<QTreeView *>();
+    QVERIFY(view);
+    const QModelIndex row = findRowNamed(view, QFileInfo(file).fileName());
+    QVERIFY(row.isValid());
+
+    runMenuAction(QStringList{QStringLiteral("Abrir com…"), QStringLiteral("Escolher executável…")});
+    openContextMenu(view, row);
+
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(pidFile), 3000);
+    {
+        QFile f(pidFile);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        pid = QString::fromUtf8(f.readAll()).trimmed();
+    }
+    QVERIFY(!pid.isEmpty());
+    // /proc/<pid> também existe para zombies; o estado em /proc/<pid>/stat decide.
+    const auto alive = [](const QString &p) {
+        const QString base = QStringLiteral("/proc/") + p;
+        if (!QFileInfo::exists(base))
+            return false;
+        QFile f(base + QStringLiteral("/stat"));
+        if (!f.open(QIODevice::ReadOnly))
+            return false;
+        const QByteArray stat = f.readAll();
+        const int close = stat.lastIndexOf(')');
+        if (close < 0 || close + 2 >= stat.size())
+            return false;
+        return stat.at(close + 2) != 'Z';
+    };
+    QVERIFY2(alive(pid), qPrintable(QStringLiteral("processo %1 não iniciou").arg(pid)));
+
+    tab.reset();
+    qApp->processEvents();
+    QTest::qWait(100);
+
+    QVERIFY2(alive(pid),
+             qPrintable(QStringLiteral("processo %1 ausente ou zombie após fechar a aba").arg(pid)));
 }
 
 void FileTabTest::openWithWithoutAssociationsOffersChooser()

@@ -75,7 +75,8 @@ private:
     void addViewMenu(QMenu *menu);
     void addOpenWithMenu(QMenu *menu, const QString &path);
     void openWithDesktop(const QString &desktop, const QString &path);
-    void launchProgram(const QString &program, const QStringList &args, const QString &cwd);
+    void launchProgram(const QString &program, const QStringList &args, const QString &cwd,
+                       bool detached = false);
     void onSelectionChanged();
     void updatePreview();
     void updatePlacesSelection();
