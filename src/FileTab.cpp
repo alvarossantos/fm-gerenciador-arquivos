@@ -31,6 +31,7 @@
 #include <QShortcut>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStyledItemDelegate>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTreeView>
@@ -38,6 +39,25 @@
 #include <QVBoxLayout>
 
 #include <memory>
+
+class DensityDelegate : public QStyledItemDelegate
+{
+public:
+    explicit DensityDelegate(int height, QObject *parent = nullptr)
+        : QStyledItemDelegate(parent), m_height(height) {}
+
+    void setHeight(int height) { m_height = height; }
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        QSize hint = QStyledItemDelegate::sizeHint(option, index);
+        hint.setHeight(m_height);
+        return hint;
+    }
+
+private:
+    int m_height;
+};
 
 namespace {
 
@@ -316,6 +336,8 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_tree->setEditTriggers(QAbstractItemView::EditKeyPressed);
     m_tree->setUniformRowHeights(true);
     m_tree->setAlternatingRowColors(true);
+    m_densityDelegate = new DensityDelegate(28, m_tree);
+    m_tree->setItemDelegate(m_densityDelegate);
     m_tree->setDragEnabled(true);
     m_tree->setAcceptDrops(true);
     m_tree->setDragDropMode(QAbstractItemView::DragDrop);
@@ -407,6 +429,7 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
 
     // ----- painel de pré-visualização -----
     m_previewPanel = new QWidget;
+    m_previewPanel->setObjectName(QStringLiteral("previewPanel"));
     auto *pl = new QVBoxLayout(m_previewPanel);
     pl->setContentsMargins(10, 10, 10, 10);
     m_previewImage = new QLabel;
@@ -493,6 +516,8 @@ void FileTab::updatePlacesSelection()
     int bestLen = -1;
     for (int i = 0; i < m_places->count(); ++i) {
         QListWidgetItem *it = m_places->item(i);
+        if (it->data(PlaceSectionRole).isValid())
+            continue;
         const QString place = QDir::cleanPath(it->data(Qt::UserRole).toString());
         if (place == current) {
             m_places->setCurrentItem(it);
@@ -624,6 +649,86 @@ void FileTab::openPath(const QString &path)
         goTo(path);
     else
         QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
+void FileTab::applyUiPreferences(const UiPreferences &prefs)
+{
+    m_ui = prefs;
+
+    struct Entry { QIcon icon; QString label; QString path; };
+    QVector<Entry> entries;
+    for (int i = 0; i < m_places->count(); ++i) {
+        QListWidgetItem *it = m_places->item(i);
+        if (it->data(PlaceSectionRole).isValid())
+            continue;
+        const QString path = it->data(Qt::UserRole).toString();
+        if (!path.isEmpty())
+            entries.append({it->icon(), it->text(), path});
+    }
+
+    m_places->clear();
+    const auto addSection = [this](const QString &label, const QString &group) {
+        auto *it = new QListWidgetItem(label, m_places);
+        it->setData(PlaceSectionRole, QStringLiteral("section"));
+        it->setData(PlaceGroupRole, group);
+        it->setFlags(it->flags() & ~Qt::ItemIsSelectable);
+        return it;
+    };
+    const auto addControl = [this](const QString &label, const QString &group) {
+        auto *it = new QListWidgetItem(label, m_places);
+        it->setData(PlaceSectionRole, QStringLiteral("control"));
+        it->setData(PlaceGroupRole, group);
+        it->setFlags(it->flags() & ~Qt::ItemIsSelectable);
+        return it;
+    };
+
+    addSection(tr("Lugares"), QStringLiteral("places"));
+    for (const Entry &entry : entries) {
+        auto *it = new QListWidgetItem(entry.icon, entry.label, m_places);
+        it->setData(Qt::UserRole, entry.path);
+        it->setData(PlaceGroupRole, QStringLiteral("places"));
+    }
+    addSection(tr("Da aba"), QStringLiteral("tab"));
+    addControl(tr("Mais…"), QStringLiteral("control-more"));
+    addSection(tr("Dispositivos"), QStringLiteral("devices"));
+    addControl(tr("Personalizar…"), QStringLiteral("control-customize"));
+
+    for (int i = 0; i < m_places->count(); ++i) {
+        const QString group = m_places->item(i)->data(PlaceGroupRole).toString();
+        bool hidden = false;
+        switch (prefs.preset) {
+        case UiPreset::Compact:
+            hidden = group == QStringLiteral("tab") || group == QStringLiteral("devices")
+                  || group == QStringLiteral("control-customize");
+            break;
+        case UiPreset::Balanced:
+            hidden = group == QStringLiteral("devices")
+                  || group == QStringLiteral("control-more")
+                  || group == QStringLiteral("control-customize");
+            break;
+        case UiPreset::Advanced:
+            hidden = group == QStringLiteral("control-more");
+            break;
+        }
+        m_places->item(i)->setHidden(hidden);
+    }
+
+    const int treeSide = qMax(8, prefs.iconSize / 2);
+    const int gridCell = qMax(96, prefs.iconSize * 2 + 48);
+    m_treeIconBase = QSize(treeSide, treeSide);
+    m_gridIconBase = QSize(prefs.iconSize, prefs.iconSize);
+    m_gridBase = QSize(gridCell, gridCell);
+    setZoom(m_zoom);
+
+    for (int col = 0; col <= 3; ++col)
+        m_tree->header()->setSectionHidden(col,
+            !prefs.columns.contains(QString::number(col)));
+
+    const int rowHeight = prefs.density == 0 ? 22 : (prefs.density == 2 ? 34 : 28);
+    m_densityDelegate->setHeight(rowHeight);
+    m_places->setSpacing(prefs.density == 0 ? 0 : (prefs.density == 2 ? 4 : 2));
+    setPreviewVisible(prefs.preview);
+    updatePlacesSelection();
 }
 
 void FileTab::setIconMode(bool icons)

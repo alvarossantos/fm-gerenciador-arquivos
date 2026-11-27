@@ -22,12 +22,14 @@
 #include <QMenu>
 #include <QPointer>
 #include <QSignalSpy>
+#include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeView>
 
 #include "FileTab.h"
 #include "ThumbnailProxy.h"
+#include "UiPreferences.h"
 
 namespace {
 
@@ -341,6 +343,10 @@ private slots:
     void viewRefinementsAreApplied();
     void zoomResetRestoresInitialSizes();
     void sizeColumnCellsAreRightAligned();
+    void presetChangesIconAndColumns();
+    void densityChangesRowHeight();
+    void previewFollowsPreferences();
+    void sectionHeadersAreNotPlaces();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -2454,6 +2460,105 @@ void FileTabTest::sizeColumnCellsAreRightAligned()
     QVERIFY2(!sizeIndex.data(Qt::DisplayRole).toString().isEmpty(), "celula de tamanho vazia");
     QVERIFY2(sizeIndex.data(Qt::TextAlignmentRole).toInt() & Qt::AlignRight,
              "valor de tamanho precisa estar alinhado a direita");
+}
+
+void FileTabTest::presetChangesIconAndColumns()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (int i = 0; i < 5; ++i) {
+        QFile f(QDir(dir.path()).filePath(QStringLiteral("arquivo-%1.txt").arg(i)));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+    }
+
+    FileTab tab(dir.path());
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Compact));
+    QCOMPARE(icons->iconSize(), QSize(32, 32));
+    QVERIFY(!tree->header()->isSectionHidden(0));
+    for (int col = 1; col <= 3; ++col)
+        QVERIFY(tree->header()->isSectionHidden(col));
+    QVERIFY(icons->gridSize().width() > icons->iconSize().width());
+
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Advanced));
+    QCOMPARE(icons->iconSize(), QSize(64, 64));
+    for (int col = 0; col <= 3; ++col)
+        QVERIFY(!tree->header()->isSectionHidden(col));
+}
+
+void FileTabTest::densityChangesRowHeight()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QFile f(QDir(dir.path()).filePath(QStringLiteral("linha.txt")));
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.close();
+
+    FileTab tab(dir.path());
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QTRY_VERIFY_WITH_TIMEOUT(tree->model()->rowCount(tree->rootIndex()) >= 1, 3000);
+    const QModelIndex index = tree->model()->index(0, 0, tree->rootIndex());
+    QVERIFY(index.isValid());
+    const auto rowHeight = [&] {
+        return tree->itemDelegate()->sizeHint(QStyleOptionViewItem(), index).height();
+    };
+
+    UiPreferences compact = defaultUiPreferences(UiPreset::Compact);
+    tab.applyUiPreferences(compact);
+    const int compactHeight = rowHeight();
+    UiPreferences advanced = defaultUiPreferences(UiPreset::Advanced);
+    tab.applyUiPreferences(advanced);
+    QVERIFY2(rowHeight() > compactHeight, "densidade alta e baixa precisam produzir alturas distintas");
+}
+
+void FileTabTest::previewFollowsPreferences()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+    auto *preview = tab.findChild<QWidget *>(QStringLiteral("previewPanel"));
+    QVERIFY(preview);
+
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Advanced));
+    QVERIFY(!preview->isHidden());
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Balanced));
+    QVERIFY(preview->isHidden());
+}
+
+void FileTabTest::sectionHeadersAreNotPlaces()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString parent = dir.path();
+    const QString child = QDir(parent).filePath(QStringLiteral("filho"));
+    QVERIFY(QDir(parent).mkdir(QStringLiteral("filho")));
+    setPlacesForTests(QStringList{parent, child});
+    auto restore = qScopeGuard([] { setPlacesForTests(QStringList{}); });
+
+    FileTab tab(child);
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Balanced));
+    QVERIFY(tab.goTo(child));
+
+    auto *places = tab.findChild<QListWidget *>(QStringLiteral("places"));
+    QVERIFY(places);
+    QVERIFY(places->currentItem());
+    QCOMPARE(places->currentItem()->data(Qt::UserRole).toString(), child);
+    QVERIFY(!places->currentItem()->data(FileTab::PlaceSectionRole).isValid());
+
+    int sections = 0;
+    for (int i = 0; i < places->count(); ++i)
+        if (places->item(i)->data(FileTab::PlaceSectionRole).isValid())
+            ++sections;
+    QVERIFY2(sections >= 2, "grupos da lateral precisam existir como seções");
 }
 
 QTEST_MAIN(FileTabTest)

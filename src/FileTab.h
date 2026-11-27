@@ -7,6 +7,8 @@
 #include <functional>
 #include <memory>
 
+#include "UiPreferences.h"
+
 class QAbstractItemView;
 class QAction;
 class QFileSystemModel;
@@ -18,6 +20,7 @@ class QProcess;
 class QProgressDialog;
 class QStackedWidget;
 class QTreeView;
+class DensityDelegate;
 class ThumbnailProxy;
 
 using RestoreBackupHook = std::function<bool(const QString &, const QString &)>;
@@ -39,6 +42,11 @@ class FileTab : public QWidget {
     Q_OBJECT
 public:
     explicit FileTab(const QString &startPath, QWidget *parent = nullptr);
+
+    static constexpr int PlaceSectionRole = Qt::UserRole + 1;
+    static constexpr int PlaceGroupRole = Qt::UserRole + 2;
+
+    void applyUiPreferences(const UiPreferences &prefs);
 
     QString desktopFileForId(const QString &id) const;
     QString currentPath() const { return m_path; }
@@ -126,4 +134,6 @@ private:
     QAction *m_zoomInAct = nullptr;
     QAction *m_zoomOutAct = nullptr;
     QAction *m_zoomResetAct = nullptr;
+    DensityDelegate *m_densityDelegate = nullptr;
+    UiPreferences m_ui;
 };
