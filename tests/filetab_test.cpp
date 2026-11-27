@@ -466,10 +466,14 @@ void FileTabTest::newSubmenuGroupsAndContents()
     QVERIFY(QFileInfo(QDir(root).filePath(QStringLiteral("pasta-criada"))).isDir());
 
     createViaMenu({ QStringLiteral("Arquivo vazio…") }, QStringLiteral("vazio"));
-    QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("vazio"))), QByteArray());
+    const QString vazio = QDir(root).filePath(QStringLiteral("vazio"));
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(vazio), 3000);
+    QCOMPARE(fileContents(vazio), QByteArray());
 
     createViaMenu({ QStringLiteral("Texto (.txt)") }, QStringLiteral("texto.txt"));
-    QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("texto.txt"))), QByteArray());
+    const QString texto = QDir(root).filePath(QStringLiteral("texto.txt"));
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(texto), 3000);
+    QCOMPARE(fileContents(texto), QByteArray());
 
     createViaMenu({ QStringLiteral("Markdown (.md)") }, QStringLiteral("notas.md"));
     QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("notas.md"))), QByteArray("# Título\n"));
