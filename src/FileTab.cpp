@@ -108,6 +108,7 @@ QString archiveSuffix(const QString &name)
 
 RestoreBackupHook restoreBackupHook;
 WaitForProcessHook waitForProcessHook;
+QStringList placesForTests;
 
 bool waitForProcess(QProcess *proc, int msecs)
 {
@@ -129,6 +130,11 @@ void setRestoreBackupHookForTests(RestoreBackupHook hook)
 void setWaitForProcessHookForTests(WaitForProcessHook hook)
 {
     waitForProcessHook = std::move(hook);
+}
+
+void setPlacesForTests(const QStringList &paths)
+{
+    placesForTests = paths;
 }
 
 FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
@@ -154,7 +160,7 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_tree->setEditTriggers(QAbstractItemView::EditKeyPressed);
     m_tree->setUniformRowHeights(true);
-    m_tree->setAlternatingRowColors(false);
+    m_tree->setAlternatingRowColors(true);
     m_tree->setDragEnabled(true);
     m_tree->setAcceptDrops(true);
     m_tree->setDragDropMode(QAbstractItemView::DragDrop);
@@ -175,7 +181,15 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_icons->setMovement(QListView::Static);
     m_icons->setIconSize(QSize(72, 72));
     m_icons->setGridSize(QSize(112, 112));
-    m_icons->setSpacing(4);
+    m_gridIconBase = m_icons->iconSize();
+    m_gridBase = m_icons->gridSize();
+    m_treeIconBase = m_tree->iconSize();
+    if (m_treeIconBase.width() <= 0) {
+        const int pm = style()->pixelMetric(QStyle::PM_ListViewIconSize);
+        m_treeIconBase = QSize(pm, pm);
+    }
+    m_tree->setIconSize(m_treeIconBase);
+    m_icons->setSpacing(8);
     m_icons->setWordWrap(true);
     m_icons->setUniformItemSizes(false);
     m_icons->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -192,24 +206,43 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
 
     // ----- painel de lugares -----
     m_places = new QListWidget;
+    m_places->setObjectName(QStringLiteral("places"));
+    m_places->setMinimumWidth(190);
     m_places->setFrameShape(QFrame::NoFrame);
     m_places->setIconSize(QSize(20, 20));
-    const struct { QStandardPaths::StandardLocation loc; const char *name; const char *icon; } defs[] = {
-        {QStandardPaths::HomeLocation, "Início", "user-home"},
-        {QStandardPaths::DesktopLocation, "Área de trabalho", "user-desktop"},
-        {QStandardPaths::DocumentsLocation, "Documentos", "folder-documents"},
-        {QStandardPaths::DownloadLocation, "Downloads", "folder-download"},
-        {QStandardPaths::PicturesLocation, "Imagens", "folder-pictures"},
-        {QStandardPaths::MusicLocation, "Músicas", "folder-music"},
-        {QStandardPaths::MoviesLocation, "Vídeos", "folder-videos"},
-    };
-    for (const auto &d : defs) {
-        const QString p = QStandardPaths::writableLocation(d.loc);
-        if (p.isEmpty() || !QDir(p).exists())
-            continue;
-        auto *it = new QListWidgetItem(QIcon::fromTheme(QLatin1String(d.icon), QIcon::fromTheme("folder")),
-                                       tr(d.name), m_places);
-        it->setData(Qt::UserRole, p);
+
+    struct PlaceItem { QString label; QString path; QString icon; };
+    QVector<PlaceItem> places;
+    if (!placesForTests.isEmpty()) {
+        for (const QString &p : placesForTests) {
+            if (p.isEmpty() || p == QStringLiteral("/") || !QDir(p).exists())
+                continue;
+            QString label = QFileInfo(p).fileName();
+            if (p == QDir::homePath())
+                label = tr("Pasta pessoal");
+            places.append({label, QDir::cleanPath(p), QStringLiteral("folder")});
+        }
+    } else {
+        const struct { QStandardPaths::StandardLocation loc; const char *name; const char *icon; } defs[] = {
+            {QStandardPaths::HomeLocation, "Pasta pessoal", "user-home"},
+            {QStandardPaths::DesktopLocation, "Área de trabalho", "user-desktop"},
+            {QStandardPaths::DocumentsLocation, "Documentos", "folder-documents"},
+            {QStandardPaths::DownloadLocation, "Downloads", "folder-download"},
+            {QStandardPaths::PicturesLocation, "Imagens", "folder-pictures"},
+            {QStandardPaths::MusicLocation, "Músicas", "folder-music"},
+            {QStandardPaths::MoviesLocation, "Vídeos", "folder-videos"},
+        };
+        for (const auto &d : defs) {
+            const QString p = QStandardPaths::writableLocation(d.loc);
+            if (p.isEmpty() || !QDir(p).exists())
+                continue;
+            places.append({tr(d.name), QDir::cleanPath(p), QLatin1String(d.icon)});
+        }
+    }
+    for (const auto &entry : places) {
+        auto *it = new QListWidgetItem(QIcon::fromTheme(entry.icon, QIcon::fromTheme("folder")),
+                                       entry.label, m_places);
+        it->setData(Qt::UserRole, entry.path);
     }
     auto *root = new QListWidgetItem(QIcon::fromTheme("drive-harddisk"), tr("Raiz (/)"), m_places);
     root->setData(Qt::UserRole, QStringLiteral("/"));
@@ -296,22 +329,64 @@ QStringList FileTab::selectedPaths() const
 
 // ---------- navegação ----------
 
-void FileTab::goTo(const QString &path, bool addHistory)
+void FileTab::updatePlacesSelection()
+{
+    const QString current = QDir::cleanPath(m_path);
+    const QStringList currentParts = current.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+
+    QListWidgetItem *best = nullptr;
+    int bestLen = -1;
+    for (int i = 0; i < m_places->count(); ++i) {
+        QListWidgetItem *it = m_places->item(i);
+        const QString place = QDir::cleanPath(it->data(Qt::UserRole).toString());
+        if (place == current) {
+            m_places->setCurrentItem(it);
+            return;
+        }
+        if (place == QStringLiteral("/"))
+            continue;
+        const QStringList parts = place.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+        if (parts.size() > currentParts.size() || parts.size() <= bestLen)
+            continue;
+        bool matches = true;
+        for (int s = 0; s < parts.size(); ++s) {
+            if (parts.at(s) != currentParts.at(s)) {
+                matches = false;
+                break;
+            }
+        }
+        if (matches) {
+            best = it;
+            bestLen = parts.size();
+        }
+    }
+
+    if (best) {
+        m_places->setCurrentItem(best);
+        return;
+    }
+    m_places->setCurrentItem(nullptr);
+    m_places->clearSelection();
+}
+
+bool FileTab::goTo(const QString &path, bool addHistory)
 {
     const QFileInfo fi(path);
     if (!fi.isDir()) {
         emit statusMessage(tr("Pasta inválida: %1").arg(path));
-        return;
+        return false;
     }
     if (!fi.isReadable()) {
         emit statusMessage(tr("Sem permissão para abrir: %1").arg(path));
-        return;
+        return false;
     }
     const QString abs = QDir::cleanPath(fi.absoluteFilePath());
 
     if (addHistory) {
-        if (m_histIdx >= 0 && m_history.value(m_histIdx) == abs)
-            return;
+        if (m_histIdx >= 0 && m_history.value(m_histIdx) == abs) {
+            updatePlacesSelection();
+            return true;
+        }
         m_history = m_history.mid(0, m_histIdx + 1);
         m_history << abs;
         m_histIdx = m_history.size() - 1;
@@ -324,9 +399,11 @@ void FileTab::goTo(const QString &path, bool addHistory)
     m_icons->setRootIndex(idx);
     m_tree->clearSelection();
     updatePreview();
+    updatePlacesSelection();
 
     emit pathChanged(abs);
     emit titleChanged(abs == QLatin1String("/") ? QStringLiteral("/") : fi.fileName());
+    return true;
 }
 
 void FileTab::back()
@@ -361,6 +438,18 @@ void FileTab::setIconMode(bool icons)
 {
     m_iconMode = icons;
     m_stack->setCurrentWidget(icons ? static_cast<QWidget *>(m_icons) : static_cast<QWidget *>(m_tree));
+}
+
+void FileTab::setZoom(int percent)
+{
+    m_zoom = qBound(50, percent, 200);
+    const int treeSide = qMax(8, m_treeIconBase.width() * m_zoom / 100);
+    const int gridSide = qMax(16, m_gridIconBase.width() * m_zoom / 100);
+    const int cell = qMax(96, m_gridBase.width() * m_zoom / 100);
+    m_icons->setIconSize(QSize(gridSide, gridSide));
+    m_icons->setGridSize(QSize(cell, cell));
+    m_tree->setIconSize(QSize(treeSide, treeSide));
+    emit zoomChanged(m_zoom);
 }
 
 void FileTab::setPreviewVisible(bool visible)

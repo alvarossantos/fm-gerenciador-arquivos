@@ -26,6 +26,13 @@ ThumbnailProxy::~ThumbnailProxy()
     QThreadPool::globalInstance()->waitForDone();
 }
 
+QVariant ThumbnailProxy::headerData(int section, Qt::Orientation orientation, int role) const
+{
+    if (orientation == Qt::Horizontal && role == Qt::TextAlignmentRole && section >= 1 && section <= 3)
+        return QVariant(Qt::AlignRight | Qt::AlignVCenter);
+    return QIdentityProxyModel::headerData(section, orientation, role);
+}
+
 QVariant ThumbnailProxy::data(const QModelIndex &index, int role) const
 {
     if (role != Qt::DecorationRole || index.column() != 0)

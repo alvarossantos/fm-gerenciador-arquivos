@@ -6,10 +6,13 @@
 #include <QClipboard>
 #include <QDir>
 #include <QFileSystemModel>
+#include <QHeaderView>
 #include <QImage>
 #include <QElapsedTimer>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QListView>
+#include <QListWidget>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -181,6 +184,11 @@ private slots:
     void extractHereKeepsBackupWhenRestoreFails();
     void closingTabStopsExtractionBeforeCleanup();
     void closingTabKeepsScratchWhenProcessDoesNotStop();
+    void zoomChangesIconAndGridSize();
+    void zoomClampsAndSurvivesModeSwitch();
+    void viewRefinementsAreApplied();
+    void zoomResetRestoresInitialSizes();
+    void sizeColumnCellsAreRightAligned();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -745,6 +753,128 @@ void FileTabTest::closingTabKeepsScratchWhenProcessDoesNotStop()
     QVERIFY(hookCalled);
     QVERIFY(hookSawRunning);
     QVERIFY2(!scratchDirs(root).isEmpty(), "processo ativo: o temporário não pode ser removido");
+}
+
+void FileTabTest::zoomChangesIconAndGridSize()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+
+    QCOMPARE(tab.zoom(), 100);
+    tab.setZoom(150);
+    QCOMPARE(tab.zoom(), 150);
+    QVERIFY(icons->iconSize().width() > 72);
+    QVERIFY(icons->gridSize().width() > 112);
+}
+
+void FileTabTest::zoomClampsAndSurvivesModeSwitch()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+
+    tab.setZoom(500);
+    QCOMPARE(tab.zoom(), 200);
+    tab.setZoom(10);
+    QCOMPARE(tab.zoom(), 50);
+
+    tab.setZoom(150);
+    tab.setIconMode(false);
+    tab.setIconMode(true);
+    QCOMPARE(tab.zoom(), 150);
+}
+
+void FileTabTest::viewRefinementsAreApplied()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QCOMPARE(tree->header()->sectionResizeMode(0), QHeaderView::Stretch);
+    QVERIFY(tree->alternatingRowColors());
+
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+    QCOMPARE(icons->spacing(), 8);
+
+    auto *places = tab.findChild<QListWidget *>(QStringLiteral("places"));
+    QVERIFY(places);
+    QVERIFY(places->minimumWidth() >= 190);
+
+    for (int col : {1, 2, 3})
+        QVERIFY2(tree->model()->headerData(col, Qt::Horizontal, Qt::TextAlignmentRole).toInt() & Qt::AlignRight,
+                 qPrintable(QString("coluna %1 sem alinhamento a direita").arg(col)));
+}
+
+void FileTabTest::zoomResetRestoresInitialSizes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+
+    const QSize initialTreeIcon = tree->iconSize();
+    const QSize initialGrid = icons->gridSize();
+    QVERIFY(!initialGrid.isEmpty());
+
+    tab.setZoom(150);
+    QVERIFY(icons->gridSize() != initialGrid);
+
+    tab.setZoom(100);
+    QCOMPARE(tree->iconSize(), initialTreeIcon);
+    QCOMPARE(icons->gridSize(), initialGrid);
+}
+
+void FileTabTest::sizeColumnCellsAreRightAligned()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString file = QDir(dir.path()).filePath(QStringLiteral("medicao.txt"));
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    QCOMPARE(f.write("1234567890"), 10);
+    f.close();
+
+    FileTab tab(dir.path());
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    auto *model = tree->model();
+    QVERIFY(model);
+
+    const QModelIndex root = tree->rootIndex();
+    QVERIFY(root.isValid());
+    QModelIndex sizeIndex;
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        for (int row = 0; row < model->rowCount(root); ++row) {
+            if (model->index(row, 0, root).data(Qt::DisplayRole).toString() == QStringLiteral("medicao.txt")) {
+                sizeIndex = model->index(row, 1, root);
+                return true;
+            }
+        }
+        return false;
+    }(), 2000);
+    QVERIFY(sizeIndex.isValid());
+    QVERIFY2(!sizeIndex.data(Qt::DisplayRole).toString().isEmpty(), "celula de tamanho vazia");
+    QVERIFY2(sizeIndex.data(Qt::TextAlignmentRole).toInt() & Qt::AlignRight,
+             "valor de tamanho precisa estar alinhado a direita");
 }
 
 QTEST_MAIN(FileTabTest)

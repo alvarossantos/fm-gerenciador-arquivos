@@ -1,5 +1,6 @@
 #pragma once
 #include <QModelIndex>
+#include <QSize>
 #include <QStringList>
 #include <QWidget>
 
@@ -21,6 +22,7 @@ using RestoreBackupHook = std::function<bool(const QString &, const QString &)>;
 void setRestoreBackupHookForTests(RestoreBackupHook hook);
 using WaitForProcessHook = std::function<bool(QProcess *, int)>;
 void setWaitForProcessHookForTests(WaitForProcessHook hook);
+void setPlacesForTests(const QStringList &paths);
 
 class FileTab : public QWidget {
     Q_OBJECT
@@ -31,15 +33,18 @@ public:
     bool canGoBack() const { return m_histIdx > 0; }
     bool canGoForward() const { return m_histIdx < m_history.size() - 1; }
 
-    void goTo(const QString &path, bool addHistory = true);
+    bool goTo(const QString &path, bool addHistory = true);
     void back();
     void forward();
     void up();
     void setIconMode(bool icons);
+    void setZoom(int percent);
+    int zoom() const { return m_zoom; }
     void setPreviewVisible(bool visible);
     void setShowHidden(bool show);
 
 signals:
+    void zoomChanged(int percent);
     void pathChanged(const QString &path);
     void titleChanged(const QString &title);
     void statusMessage(const QString &text);
@@ -53,6 +58,7 @@ private:
     void showContextMenu(const QPoint &pos);
     void onSelectionChanged();
     void updatePreview();
+    void updatePlacesSelection();
 
     void copyToClipboard(bool cut);
     void paste();
@@ -86,4 +92,8 @@ private:
     QStringList m_history;
     int m_histIdx = -1;
     bool m_iconMode = false;
+    int m_zoom = 100;
+    QSize m_treeIconBase;
+    QSize m_gridIconBase;
+    QSize m_gridBase;
 };
