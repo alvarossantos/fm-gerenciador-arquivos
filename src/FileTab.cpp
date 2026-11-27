@@ -771,11 +771,6 @@ void FileTab::extract(const QString &archive, bool intoFolder)
         base.chop(archiveSuffix(base).size());
         dest = uniquePath(m_path, base.isEmpty() ? QStringLiteral("extraido") : base);
     }
-    // bsdtar, por padrão, recusa caminhos absolutos e “..” (proteção contra zip-slip).
-    if (!intoFolder) {
-        runBsdtar({"-x", "-f", archive, "-C", dest}, tr("Extraído em %1").arg(dest));
-        return;
-    }
 
     QTemporaryDir tmp(QDir(m_path).filePath(QStringLiteral(".fm-extract-XXXXXX")));
     if (!tmp.isValid()) {
@@ -795,8 +790,28 @@ void FileTab::extract(const QString &archive, bool intoFolder)
     progress->setWindowModality(Qt::NonModal);
     progress->show();
 
+    std::function<bool()> publish;
+    if (intoFolder) {
+        publish = [scratch, dest] {
+            return !QFileInfo::exists(dest) && QDir().rename(scratch, dest);
+        };
+    } else {
+        publish = [this, scratch] {
+            const auto entries = QDir(scratch).entryInfoList(
+                QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+            for (const QFileInfo &e : entries) {
+                const QString dst = QDir(m_path).filePath(e.fileName());
+                if ((QFileInfo::exists(dst) || QFileInfo(dst).isSymLink()) && !removePath(dst))
+                    return false;
+                const QString src = e.absoluteFilePath();
+                if (!QFile::rename(src, dst) && !(copyRecursive(src, dst) && removePath(src)))
+                    return false;
+            }
+            return true;
+        };
+    }
+
+    // bsdtar, por padrão, recusa caminhos absolutos e “..” (proteção contra zip-slip).
     runBsdtar({"-x", "-f", archive, "-C", scratch}, tr("Extraído em %1").arg(dest),
-              progress, scratch, [scratch, dest] {
-                  return !QFileInfo::exists(dest) && QDir().rename(scratch, dest);
-              });
+              progress, scratch, publish);
 }
