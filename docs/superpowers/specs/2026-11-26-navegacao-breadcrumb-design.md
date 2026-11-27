@@ -47,21 +47,23 @@ Fica para o próximo recorte da mesma branch: grade, lista e abas (aparência, z
 ## Decisões de comportamento
 
 - **Segmentos:** raiz `/`, cada componente do caminho e a pasta atual. Rótulo longo usa elipse no meio; tooltip traz o nome completo. Clique chama `goTo()` na aba ativa e entra no histórico daquela aba.
-- **Caminho longo / janela estreita:** manter visíveis o ancestral inicial e a pasta atual; os demais são agrupados num botão `…` com `QMenu` contendo uma ação por ancestral oculto, com o caminho completo. Recalcular ao redimensionar.
-- **Edição:** `Ctrl+L` mostra o campo, foca e seleciona. `Enter` com caminho válido navega e volta aos segmentos. `Enter` com caminho inválido mantém o campo aberto com o texto digitado, informa o erro no status e não altera pasta nem histórico. `Esc` volta aos segmentos da pasta atual.
+- **Caminho longo / janela estreita:** manter visíveis o ancestral inicial e a pasta atual; os demais são agrupados num botão `…` com `QMenu` contendo uma ação por ancestral oculto, com o caminho completo. Se não houver espaço, a própria raiz entra no menu. Recalcular ao redimensionar e cobrir com teste: estreitar a janela, conferir a pasta atual visível, abrir o menu, verificar cada ancestral oculto e navegar por um deles.
+- **Edição:** `Ctrl+L` mostra o campo, foca e seleciona. `Enter` com caminho válido navega e volta aos segmentos. `Enter` com caminho inválido mantém o campo aberto com o texto digitado, informa o erro no status e não altera pasta nem histórico. `Esc` volta aos segmentos da pasta atual. Trocar de aba encerra a edição, descarta o texto pendente e mostra o breadcrumb da aba recém-ativada — assim um `Enter` posterior não aplica o caminho digitado na aba errada.
 - **Destaque lateral:** comparar caminhos limpos por segmentos. Casa exata primeiro; depois o ancestral mais específico; `Pasta pessoal` como fallback para subpastas da home; `Raiz (/)` apenas para `/`. `~/Documentos2` não casa com `~/Documentos`. O item da home passa a se chamar `Pasta pessoal`.
-- Atualizar o destaque só muda a seleção visual do `QListWidget`: nunca chama `goTo()`, nunca mexe em `m_path`, `m_history` ou seleção da view.
+- Atualizar o destaque só muda a seleção visual do `QListWidget`: nunca chama `goTo()`, nunca mexe em `m_path`, `m_history` ou seleção da view. A cobertura é feita pela navegação normal (`goTo()`, Voltar e Avançar), observando a seleção do painel; `updatePlacesSelection()` continua privado, sem `Q_INVOKABLE`.
 
 ## Implementação prevista
 
-- `MainWindow`: widget de breadcrumb com `objectName` nos botões e no campo; funções privadas para construir segmentos, medir largura, elidir e abrir o menu `…`; ligação a `pathChanged` e `currentChanged`; `Esc` via shortcut com contexto restrito ao campo. `FileTab::goTo()` passa a retornar `bool` para que `Enter` saiba se pode sair do modo de edição; o erro continua sendo reportado pelo sinal `statusMessage`.
-- `FileTab`: `Q_INVOKABLE void updatePlacesSelection()` com a regra de ancestral; chamada ao fim de `goTo()`; hook de teste para definir os lugares; `itemClicked` continua navegando normalmente.
+- `MainWindow`: widget de breadcrumb com `objectName` nos botões e no campo; funções privadas para construir segmentos, medir largura, elidir e abrir o menu `…`; ligação a `pathChanged` e `currentChanged`, encerrando a edição neste último; `Esc` via shortcut com contexto restrito ao campo. `FileTab::goTo()` passa a retornar `bool` para que `Enter` saiba se pode sair do modo de edição; o erro continua sendo reportado pelo sinal `statusMessage`.
+- `FileTab`: `void updatePlacesSelection()` privado, com a regra de ancestral e chamada ao fim de `goTo()`; hook de teste para definir os lugares; `itemClicked` continua navegando normalmente.
 - `tests/mainwindow_test.cpp`: novo alvo CTest ligando `MainWindow.cpp`, `FileTab.cpp`, `ThumbnailProxy.cpp` e `ThemeManager.cpp`. Casos:
   1. breadcrumb e destaque acompanham a troca entre duas abas (`~/Documentos/projeto` e `~/Downloads/teste`);
   2. clique num segmento seguido de Voltar usa o histórico da aba ativa;
-  3. `updatePlacesSelection()` preserva pasta e histórico;
+  3. destaque observado via `goTo()`, Voltar e Avançar, com pasta e histórico preservados;
   4. `Documentos2` não herda o destaque de `Documentos`;
-  5. `Ctrl+L`/`Enter`/`Esc`, incluindo caminho inválido.
+  5. `Ctrl+L`/`Enter`/`Esc`, incluindo caminho inválido;
+  6. menu `…` em janela estreita, com navegação por um ancestral oculto;
+  7. troca de aba descarta texto pendente e mostra o breadcrumb da aba ativada.
 
 ## Evidência e pendências
 
