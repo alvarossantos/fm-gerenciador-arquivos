@@ -27,3 +27,13 @@ if(ipo_ok AND CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 install(TARGETS fm RUNTIME DESTINATION bin)
+
+include(CTest)
+if(BUILD_TESTING)
+  find_package(Qt6 REQUIRED COMPONENTS Test)
+  add_executable(theme_manager_test tests/theme_manager_test.cpp src/ThemeManager.cpp)
+  target_include_directories(theme_manager_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(theme_manager_test PRIVATE Qt6::Widgets Qt6::Test)
+  add_test(NAME theme_manager_test COMMAND theme_manager_test)
+  set_tests_properties(theme_manager_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
