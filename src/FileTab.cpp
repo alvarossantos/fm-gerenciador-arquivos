@@ -8,6 +8,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QHBoxLayout>
@@ -24,6 +25,7 @@
 #include <QMimeDatabase>
 #include <QPointer>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QProgressDialog>
 #include <QShortcut>
 #include <QSplitter>
@@ -107,11 +109,58 @@ QString archiveSuffix(const QString &name)
     return QString();
 }
 
+QString desktopAppName(const QString &desktop, const QString &id)
+{
+    QFile f(desktop);
+    if (f.open(QIODevice::ReadOnly)) {
+        bool inEntry = false;
+        while (!f.atEnd()) {
+            const QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.startsWith(QLatin1Char('['))) {
+                inEntry = line.compare(QStringLiteral("[Desktop Entry]"), Qt::CaseInsensitive) == 0;
+                continue;
+            }
+            if (inEntry && line.startsWith(QStringLiteral("Name="), Qt::CaseInsensitive)) {
+                const QString name = line.mid(5).trimmed();
+                if (!name.isEmpty())
+                    return name;
+            }
+        }
+    }
+    return id;
+}
+
+QStringList gioRegisteredApps(const QByteArray &output)
+{
+    QStringList ids;
+    bool registered = false;
+    const QStringList lines = QString::fromUtf8(output).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QStringLiteral("Registered applications:"), Qt::CaseInsensitive)) {
+            registered = true;
+            continue;
+        }
+        if (!registered)
+            continue;
+        if (line.startsWith(QStringLiteral("Recommended applications:"), Qt::CaseInsensitive))
+            break;
+        const QString id = line.section(QLatin1Char('='), 0, 0).trimmed();
+        if (id.endsWith(QStringLiteral(".desktop"), Qt::CaseInsensitive))
+            ids << id;
+    }
+    return ids;
+}
+
 RestoreBackupHook restoreBackupHook;
 WaitForProcessHook waitForProcessHook;
 QStringList placesForTests;
 QString templatesDirForTests;
 ContextMenuHook contextMenuHook;
+QStringList mimeIdsForTests;
+bool mimeQueryForTestsSet = false;
+ExecutableChooserHook executableChooserHook;
+LaunchHook launchHook;
 
 bool waitForProcess(QProcess *proc, int msecs)
 {
@@ -148,6 +197,55 @@ void setTemplatesDirForTests(const QString &dir)
 void setContextMenuHookForTests(ContextMenuHook hook)
 {
     contextMenuHook = std::move(hook);
+}
+
+void setMimeQueryForTests(const QStringList &ids)
+{
+    mimeIdsForTests = ids;
+    mimeQueryForTestsSet = true;
+}
+
+void setExecutableChooserForTests(ExecutableChooserHook hook)
+{
+    executableChooserHook = std::move(hook);
+}
+
+void setLaunchHookForTests(LaunchHook hook)
+{
+    launchHook = std::move(hook);
+}
+
+QString FileTab::desktopFileForId(const QString &id) const
+{
+    if (id.isEmpty())
+        return QString();
+
+    const QFileInfo direct(id);
+    if (direct.isAbsolute() && direct.exists())
+        return direct.absoluteFilePath();
+
+    QStringList roots;
+    const QByteArray home = qgetenv("XDG_DATA_HOME");
+    if (!home.isEmpty())
+        roots << QFileInfo(QString::fromLocal8Bit(home)).absoluteFilePath();
+    roots << QDir::homePath() + QStringLiteral("/.local/share");
+    roots << QStringLiteral("/usr/local/share") << QStringLiteral("/usr/share");
+
+    const QByteArray dirs = qgetenv("XDG_DATA_DIRS");
+    if (!dirs.isEmpty()) {
+        for (const QByteArray &part : dirs.split(':')) {
+            if (!part.isEmpty())
+                roots << QFileInfo(QString::fromLocal8Bit(part)).absoluteFilePath();
+        }
+    }
+
+    for (const QString &root : roots) {
+        const QString candidate = QDir(root).absoluteFilePath(
+            QStringLiteral("applications/%1").arg(id));
+        if (QFileInfo::exists(candidate))
+            return QFileInfo(candidate).absoluteFilePath();
+    }
+    return QString();
 }
 
 FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
@@ -578,8 +676,12 @@ void FileTab::showContextMenu(const QPoint &pos)
 
     if (one) {
         menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
-        if (oneDir)
+        if (oneDir) {
             menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
+        } else {
+            QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), tr("Abrir com…"));
+            addOpenWithMenu(openWith, first);
+        }
         menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
         menu.addSeparator();
     }
@@ -691,6 +793,172 @@ void FileTab::addViewMenu(QMenu *menu)
         menu->addAction(m_zoomOutAct);
     if (m_zoomResetAct)
         menu->addAction(m_zoomResetAct);
+}
+
+void FileTab::addOpenWithMenu(QMenu *menu, const QString &path)
+{
+    if (!menu)
+        return;
+
+    const QPointer<QMenu> popup = menu;
+    QAction *chooser = menu->addAction(tr("Escolher executável…"), this, [this, path] {
+        const QString program = executableChooserHook ? executableChooserHook()
+                                                      : QFileDialog::getOpenFileName(
+                                                            this, tr("Escolher executável…"), m_path);
+        if (!program.isEmpty())
+            launchProgram(program, QStringList{ path }, QString());
+    });
+
+    const auto fill = [this, popup, chooser, path](const QStringList &ids) {
+        if (!popup)
+            return;
+        QStringList seen;
+        bool added = false;
+        for (const QString &id : ids) {
+            const QString clean = id.trimmed();
+            if (clean.isEmpty() || seen.contains(clean))
+                continue;
+            seen << clean;
+            const QString desktop = desktopFileForId(clean);
+            auto *entry = new QAction(desktopAppName(desktop, clean), popup.data());
+            popup->insertAction(chooser, entry);
+            connect(entry, &QAction::triggered, popup.data(), [this, desktop, path] {
+                openWithDesktop(desktop, path);
+            });
+            added = true;
+        }
+        if (added)
+            popup->insertSeparator(chooser);
+    };
+
+    if (mimeQueryForTestsSet) {
+        fill(mimeIdsForTests);
+        return;
+    }
+
+    const QString mime = QMimeDatabase().mimeTypeForFile(QFileInfo(path)).name();
+    if (mime.isEmpty())
+        return;
+
+    struct QueryState {
+        int remaining = 2;
+        bool done = false;
+        QString defaultId;
+        QStringList gioIds;
+    };
+    auto state = std::make_shared<QueryState>();
+    auto defaultDone = std::make_shared<bool>(false);
+    auto gioDone = std::make_shared<bool>(false);
+
+    const auto oneDone = [state, fill] {
+        if (state->done || --state->remaining > 0)
+            return;
+        state->done = true;
+        QStringList ids;
+        if (!state->defaultId.isEmpty())
+            ids << state->defaultId;
+        ids << state->gioIds;
+        fill(ids);
+    };
+
+    auto *xdg = new QProcess(this);
+    const QPointer<QProcess> xdgGuard = xdg;
+    connect(xdg, &QProcess::finished, this,
+            [xdgGuard, state, defaultDone, oneDone](int, QProcess::ExitStatus) {
+                if (!*defaultDone) {
+                    *defaultDone = true;
+                    const QString out = QString::fromUtf8(xdgGuard ? xdgGuard->readAllStandardOutput()
+                                                                   : QByteArray());
+                    state->defaultId = out.trimmed().section(QLatin1Char('\n'), 0, 0).trimmed();
+                    oneDone();
+                }
+                if (xdgGuard)
+                    xdgGuard->deleteLater();
+            });
+    connect(xdg, &QProcess::errorOccurred, this,
+            [xdgGuard, defaultDone, oneDone](QProcess::ProcessError) {
+                if (!*defaultDone) {
+                    *defaultDone = true;
+                    oneDone();
+                }
+                if (xdgGuard)
+                    xdgGuard->deleteLater();
+            });
+    xdg->start(QStringLiteral("xdg-mime"),
+               {QStringLiteral("query"), QStringLiteral("default"), mime});
+
+    auto *gio = new QProcess(this);
+    const QPointer<QProcess> gioGuard = gio;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("LC_ALL"), QStringLiteral("C"));
+    gio->setProcessEnvironment(env);
+    connect(gio, &QProcess::finished, this,
+            [gioGuard, state, gioDone, oneDone](int, QProcess::ExitStatus) {
+                if (!*gioDone) {
+                    *gioDone = true;
+                    const QByteArray out = gioGuard ? gioGuard->readAllStandardOutput() : QByteArray();
+                    state->gioIds = gioRegisteredApps(out);
+                    oneDone();
+                }
+                if (gioGuard)
+                    gioGuard->deleteLater();
+            });
+    connect(gio, &QProcess::errorOccurred, this,
+            [gioGuard, gioDone, oneDone](QProcess::ProcessError) {
+                if (!*gioDone) {
+                    *gioDone = true;
+                    oneDone();
+                }
+                if (gioGuard)
+                    gioGuard->deleteLater();
+            });
+    gio->start(QStringLiteral("gio"), {QStringLiteral("mime"), mime});
+}
+
+void FileTab::openWithDesktop(const QString &desktop, const QString &path)
+{
+    if (desktop.isEmpty() || path.isEmpty())
+        return;
+    launchProgram(QStringLiteral("gio"), QStringList{QStringLiteral("launch"), desktop, path}, QString());
+}
+
+void FileTab::launchProgram(const QString &program, const QStringList &args, const QString &cwd)
+{
+    if (program.isEmpty())
+        return;
+
+    if (launchHook) {
+        if (!launchHook(program, args, cwd))
+            emit statusMessage(tr("Falha ao abrir o arquivo"));
+        return;
+    }
+
+    auto *proc = new QProcess(this);
+    const QPointer<QProcess> guard = proc;
+    const auto reported = std::make_shared<bool>(false);
+    const auto failure = [this, reported] {
+        if (*reported)
+            return;
+        *reported = true;
+        emit statusMessage(tr("Falha ao abrir o arquivo"));
+    };
+    connect(proc, &QProcess::errorOccurred, this, [guard, failure](QProcess::ProcessError) {
+        failure();
+        if (guard)
+            guard->deleteLater();
+    });
+    connect(proc, &QProcess::finished, this,
+            [guard, failure, reported](int code, QProcess::ExitStatus status) {
+                if (status == QProcess::NormalExit && code == 0)
+                    *reported = true;
+                else
+                    failure();
+                if (guard)
+                    guard->deleteLater();
+            });
+    if (!cwd.isEmpty())
+        proc->setWorkingDirectory(cwd);
+    proc->start(program, args);
 }
 
 // ---------- operações de arquivo ----------

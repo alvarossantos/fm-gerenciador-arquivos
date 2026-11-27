@@ -28,12 +28,18 @@ void setPlacesForTests(const QStringList &paths);
 void setTemplatesDirForTests(const QString &dir);
 using ContextMenuHook = std::function<void(QMenu *, const QStringList &)>;
 void setContextMenuHookForTests(ContextMenuHook hook);
+void setMimeQueryForTests(const QStringList &ids);
+using ExecutableChooserHook = std::function<QString()>;
+void setExecutableChooserForTests(ExecutableChooserHook hook);
+using LaunchHook = std::function<bool(const QString &, const QStringList &, const QString &)>;
+void setLaunchHookForTests(LaunchHook hook);
 
 class FileTab : public QWidget {
     Q_OBJECT
 public:
     explicit FileTab(const QString &startPath, QWidget *parent = nullptr);
 
+    QString desktopFileForId(const QString &id) const;
     QString currentPath() const { return m_path; }
     bool canGoBack() const { return m_histIdx > 0; }
     bool canGoForward() const { return m_histIdx < m_history.size() - 1; }
@@ -65,6 +71,9 @@ private:
     void showContextMenu(const QPoint &pos);
     void addNewMenu(QMenu *menu);
     void addViewMenu(QMenu *menu);
+    void addOpenWithMenu(QMenu *menu, const QString &path);
+    void openWithDesktop(const QString &desktop, const QString &path);
+    void launchProgram(const QString &program, const QStringList &args, const QString &cwd);
     void onSelectionChanged();
     void updatePreview();
     void updatePlacesSelection();

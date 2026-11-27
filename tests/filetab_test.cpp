@@ -221,6 +221,24 @@ QString contextTestRoot(QTemporaryDir &dir)
     return root;
 }
 
+struct LaunchCall {
+    QString program;
+    QStringList args;
+    QString cwd;
+};
+
+QString writeDesktopFile(const QString &path, const QString &name, const QString &exec)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly))
+        return QString();
+    const QString content = QStringLiteral("[Desktop Entry]\nType=Application\nName=%1\nExec=%2\nTerminal=false\n")
+                                .arg(name, exec);
+    f.write(content.toUtf8());
+    f.close();
+    return QFileInfo(path).absoluteFilePath();
+}
+
 } // namespace
 
 class FileTabTest : public QObject
@@ -240,6 +258,11 @@ private slots:
     void contextMenuOutsideSelectionReplacesTarget();
     void menuActionsUseFrozenTarget();
     void copyPathActionsWriteTextToClipboard();
+    void openWithUsesDesktopPathAndSeparateArgs();
+    void gioLaunchPassesAccentedPathToDesktopApp();
+    void openWithLaunchFailureReportsStatus();
+    void openWithCancelStartsNothing();
+    void openWithWithoutAssociationsOffersChooser();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
     void extractionSuccessPublishesFolder();
@@ -707,6 +730,230 @@ void FileTabTest::copyPathActionsWriteTextToClipboard()
     const QString expectedPaths = QDir(root).filePath(QStringLiteral("alpha.txt")) + QLatin1Char('\n')
                                 + QDir(root).filePath(QStringLiteral("beta.txt"));
     QCOMPARE(many->text(), expectedPaths);
+}
+
+void FileTabTest::openWithUsesDesktopPathAndSeparateArgs()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString apps = QDir(dir.path()).filePath(QStringLiteral("applications"));
+    QVERIFY(QDir().mkpath(apps));
+    const QString desktop = writeDesktopFile(QDir(apps).filePath(QStringLiteral("tmp.editor.desktop")),
+                                             QStringLiteral("Editor de Teste"),
+                                             QStringLiteral("/bin/true %f"));
+    QVERIFY(!desktop.isEmpty());
+
+    const QByteArray oldXdg = qgetenv("XDG_DATA_HOME");
+    qputenv("XDG_DATA_HOME", QDir(dir.path()).absolutePath().toUtf8());
+    const auto restoreXdg = qScopeGuard([oldXdg] { qputenv("XDG_DATA_HOME", oldXdg); });
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    const QString file = QDir(root).filePath(QStringLiteral("arquivo com acento.txt"));
+    {
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("conteúdo\n");
+    }
+
+    LaunchCall call;
+    bool called = false;
+    setMimeQueryForTests({QStringLiteral("tmp.editor.desktop")});
+    setLaunchHookForTests([&](const QString &program, const QStringList &args, const QString &cwd) {
+        call = {program, args, cwd};
+        called = true;
+        return true;
+    });
+    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+    const auto resetLaunch = qScopeGuard([] { setLaunchHookForTests({}); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    const QModelIndex row = findRowNamed(view, QFileInfo(file).fileName());
+    QVERIFY(row.isValid());
+
+    runMenuAction(QStringList{QStringLiteral("Abrir com…"), QStringLiteral("Editor de Teste")});
+    openContextMenu(view, row);
+
+    QTRY_VERIFY_WITH_TIMEOUT(called, 3000);
+    const QStringList expectedArgs{QStringLiteral("launch"), desktop, file};
+    QCOMPARE(call.program, QStringLiteral("gio"));
+    QCOMPARE(call.args, expectedArgs);
+    QVERIFY(call.cwd.isEmpty());
+}
+
+void FileTabTest::gioLaunchPassesAccentedPathToDesktopApp()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString apps = QDir(dir.path()).filePath(QStringLiteral("applications"));
+    QVERIFY(QDir().mkpath(apps));
+
+    const QString received = QDir(dir.path()).filePath(QStringLiteral("recebido.txt"));
+    const QString capture = QDir(dir.path()).filePath(QStringLiteral("capture.sh"));
+    {
+        QFile f(capture);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        const QString script = QStringLiteral("#!/bin/sh\nprintf '%s' \"$1\" > \"%1\"\n").arg(received);
+        f.write(script.toUtf8());
+    }
+    QVERIFY(QFile::setPermissions(capture, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner
+                                  | QFile::ReadGroup | QFile::ExeGroup | QFile::ReadOther | QFile::ExeOther));
+
+    const QString desktop = writeDesktopFile(QDir(apps).filePath(QStringLiteral("test-editor.desktop")),
+                                             QStringLiteral("Editor Descartável"),
+                                             QStringLiteral("\"%1\" %f").arg(capture));
+    QVERIFY(!desktop.isEmpty());
+
+    const QByteArray oldXdg = qgetenv("XDG_DATA_HOME");
+    qputenv("XDG_DATA_HOME", QDir(dir.path()).absolutePath().toUtf8());
+    const auto restoreXdg = qScopeGuard([oldXdg] { qputenv("XDG_DATA_HOME", oldXdg); });
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    const QString file = QDir(root).filePath(QStringLiteral("arquivo com acento á.txt"));
+    {
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("conteúdo\n");
+    }
+
+    setLaunchHookForTests({});
+    setMimeQueryForTests({QStringLiteral("test-editor.desktop")});
+    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    QCOMPARE(tab.desktopFileForId(QStringLiteral("test-editor.desktop")), desktop);
+
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    const QModelIndex row = findRowNamed(view, QFileInfo(file).fileName());
+    QVERIFY(row.isValid());
+
+    runMenuAction(QStringList{QStringLiteral("Abrir com…"), QStringLiteral("Editor Descartável")});
+    openContextMenu(view, row);
+
+    QTRY_VERIFY_WITH_TIMEOUT(fileContents(received) == file.toUtf8(), 10000);
+    QCOMPARE(fileContents(received), file.toUtf8());
+}
+
+void FileTabTest::openWithLaunchFailureReportsStatus()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString apps = QDir(dir.path()).filePath(QStringLiteral("applications"));
+    QVERIFY(QDir().mkpath(apps));
+    const QString desktop = writeDesktopFile(QDir(apps).filePath(QStringLiteral("fail.desktop")),
+                                             QStringLiteral("Falha Teste"),
+                                             QStringLiteral("%1/inexistente %f").arg(dir.path()));
+    QVERIFY(!desktop.isEmpty());
+
+    const QByteArray oldXdg = qgetenv("XDG_DATA_HOME");
+    qputenv("XDG_DATA_HOME", QDir(dir.path()).absolutePath().toUtf8());
+    const auto restoreXdg = qScopeGuard([oldXdg] { qputenv("XDG_DATA_HOME", oldXdg); });
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    const QString file = QDir(root).filePath(QStringLiteral("arquivo.txt"));
+    { QFile f(file); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("x"); }
+
+    setLaunchHookForTests({});
+    setMimeQueryForTests({QStringLiteral("fail.desktop")});
+    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+
+    FileTab tab(root);
+    QSignalSpy spy(&tab, &FileTab::statusMessage);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    const QModelIndex row = findRowNamed(view, QFileInfo(file).fileName());
+    QVERIFY(row.isValid());
+
+    runMenuAction(QStringList{QStringLiteral("Abrir com…"), QStringLiteral("Falha Teste")});
+    openContextMenu(view, row);
+
+    const auto hasFailure = [&spy] {
+        for (int i = 0; i < spy.count(); ++i)
+            if (spy.at(i).value(0).toString().contains(QStringLiteral("Falha")))
+                return true;
+        return false;
+    };
+    QTRY_VERIFY_WITH_TIMEOUT(hasFailure(), 10000);
+}
+
+void FileTabTest::openWithCancelStartsNothing()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    const QString file = QDir(root).filePath(QStringLiteral("alpha.txt"));
+
+    LaunchCall call;
+    bool launched = false;
+    bool chooserCalled = false;
+    setMimeQueryForTests({});
+    setExecutableChooserForTests([&] { chooserCalled = true; return QString(); });
+    setLaunchHookForTests([&](const QString &program, const QStringList &args, const QString &cwd) {
+        call = {program, args, cwd};
+        launched = true;
+        return true;
+    });
+    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+    const auto resetChooser = qScopeGuard([] { setExecutableChooserForTests({}); });
+    const auto resetLaunch = qScopeGuard([] { setLaunchHookForTests({}); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    const QModelIndex row = findRowNamed(view, QFileInfo(file).fileName());
+    QVERIFY(row.isValid());
+
+    runMenuAction(QStringList{QStringLiteral("Abrir com…"), QStringLiteral("Escolher executável…")});
+    openContextMenu(view, row);
+
+    QVERIFY(chooserCalled);
+    QVERIFY2(!launched, "cancelar o escolhedor não deve iniciar launch");
+    QVERIFY(call.program.isEmpty());
+}
+
+void FileTabTest::openWithWithoutAssociationsOffersChooser()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+
+    setMimeQueryForTests({});
+    setExecutableChooserForTests([] { return QString(); });
+    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+    const auto resetChooser = qScopeGuard([] { setExecutableChooserForTests({}); });
+
+    QStringList labels;
+    setContextMenuHookForTests([&labels](QMenu *menu, const QStringList &) {
+        QAction *openWith = actionNamed(menu, QStringLiteral("Abrir com…"));
+        labels = openWith && openWith->menu() ? collectMenuLabels(openWith->menu()) : QStringList();
+        QTimer::singleShot(0, [] { closePopups(); });
+    });
+    const auto resetContext = qScopeGuard([] { setContextMenuHookForTests({}); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    const QModelIndex row = findRowNamed(view, QStringLiteral("alpha.txt"));
+    QVERIFY(row.isValid());
+
+    openContextMenu(view, row);
+
+    QCOMPARE(labels, QStringList{QStringLiteral("Escolher executável…")});
 }
 
 void FileTabTest::extractionFailureDoesNotPublishFolder()
