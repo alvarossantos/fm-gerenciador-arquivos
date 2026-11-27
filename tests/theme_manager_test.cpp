@@ -19,6 +19,8 @@ private slots:
     void validJsonAppliesPalette();
     void invalidJsonKeepsLastPalette();
     void atomicReplaceAppliesNewPalette();
+    void missingFileAtStartupUsesDefault();
+    void camelCasePaletteWorks();
 
 private:
     void writeDirect(const QString &path, const QString &json);
@@ -106,6 +108,30 @@ void ThemeManagerTest::atomicReplaceAppliesNewPalette()
     writeAtomic(path, QStringLiteral("{\"surface\":\"#123456\",\"primary\":\"#445566\"}"));
     QTRY_COMPARE_WITH_TIMEOUT(qApp->palette().color(QPalette::Window),
                               QColor(QStringLiteral("#123456")), 2000);
+}
+
+void ThemeManagerTest::missingFileAtStartupUsesDefault()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    ThemeManager theme;
+    theme.setThemeFile(dir.filePath(QStringLiteral("nao-existe.json")));
+    QCOMPARE(qApp->palette().color(QPalette::Window), m_defaultWindow);
+}
+
+void ThemeManagerTest::camelCasePaletteWorks()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("ryoku-colors.json"));
+    writeDirect(path, QStringLiteral("{\"surface\":\"#123456\",\"onSurface\":\"#654321\","
+                                     "\"primaryContainer\":\"#abcdef\"}"));
+
+    ThemeManager theme;
+    theme.setThemeFile(path);
+
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#123456")));
+    QVERIFY(qApp->styleSheet().contains(QStringLiteral("#abcdef")));
 }
 
 QTEST_MAIN(ThemeManagerTest)
