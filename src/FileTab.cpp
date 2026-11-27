@@ -729,58 +729,76 @@ void FileTab::showContextMenu(const QPoint &pos)
     const QString first = sel.value(0);
 
     QMenu menu(this);
-
-    if (one) {
-        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
-        if (oneDir) {
-            menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
-            menu.addAction(tr("Abrir terminal nesta pasta"), this, [this, first] { openTerminal(first); });
-            menu.addAction(tr("Propriedades da pasta"), this, [this, first] { showProperties(first); });
-        } else {
-            QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), tr("Abrir com…"));
-            addOpenWithMenu(openWith, first);
-        }
-        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
-        menu.addSeparator();
-    }
-
-    addNewMenu(&menu);
-    menu.addSeparator();
+    const auto addPaste = [this, &menu] {
+        QAction *act = menu.addAction(QIcon::fromTheme("edit-paste"), tr("Colar"), this, [this] { paste(); });
+        const QMimeData *md = QGuiApplication::clipboard()->mimeData();
+        act->setEnabled(md && md->hasUrls());
+    };
 
     if (sel.isEmpty()) {
+        menu.addAction(QIcon::fromTheme("folder-new"), tr("Nova pasta…"), this, [this] { newFolder(); });
+        addNewMenu(&menu);
+        menu.addSeparator();
+        addPaste();
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("view-refresh"), tr("Atualizar"), this, [this] { refreshModel(); });
         QMenu *view = menu.addMenu(tr("Exibir"));
         addViewMenu(view);
         menu.addAction(tr("Abrir terminal aqui"), this, [this] { openTerminal(m_path); });
-        menu.addAction(QIcon::fromTheme("view-refresh"), tr("Atualizar"), this, [this] { refreshModel(); });
+        menu.addAction(tr("Propriedades da pasta"), this, [this] { showProperties(m_path); });
+    } else if (one && oneDir) {
+        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
+        menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
+        menu.addAction(tr("Abrir terminal nesta pasta"), this, [this, first] { openTerminal(first); });
+        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
         menu.addSeparator();
-    }
-
-    if (!sel.isEmpty()) {
+        addNewMenu(&menu);
+        menu.addSeparator();
         menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
         menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
-        if (sel.size() > 1)
-            menu.addAction(tr("Copiar caminhos"), this, [this, sel] { copyPathsToClipboard(sel); });
-    }
-    QAction *pasteAct = menu.addAction(QIcon::fromTheme("edit-paste"), tr("Colar"), this, [this] { paste(); });
-    const QMimeData *md = QGuiApplication::clipboard()->mimeData();
-    pasteAct->setEnabled(md && md->hasUrls());
-
-    if (!sel.isEmpty()) {
+        addPaste();
         menu.addSeparator();
-        if (one)
-            menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
+        menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
         menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
         menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
         menu.addSeparator();
         menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
-        if (one && !archiveSuffix(first).isEmpty()) {
+        menu.addSeparator();
+        menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
+    } else if (one) {
+        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
+        QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), tr("Abrir com…"));
+        addOpenWithMenu(openWith, first);
+        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
+        menu.addSeparator();
+        addNewMenu(&menu);
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        addPaste();
+        menu.addSeparator();
+        menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
+        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        if (!archiveSuffix(first).isEmpty()) {
             menu.addAction(QIcon::fromTheme("archive-extract"), tr("Extrair aqui"), this, [this, first] { extract(first, false); });
             menu.addAction(tr("Extrair em pasta própria"), this, [this, first] { extract(first, true); });
         }
-        if (one) {
-            menu.addSeparator();
-            menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
-        }
+        menu.addSeparator();
+        menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
+    } else {
+        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        menu.addAction(tr("Copiar caminhos"), this, [this, sel] { copyPathsToClipboard(sel); });
+        addPaste();
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addSeparator();
+        addNewMenu(&menu);
     }
 
     if (contextMenuHook)

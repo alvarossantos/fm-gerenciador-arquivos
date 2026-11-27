@@ -79,6 +79,18 @@ QStringList collectMenuLabels(QMenu *menu, const QString &prefix = QString())
     return out;
 }
 
+// Rótulos diretos do menu, sem separadores e sem descer em submenus.
+QStringList directMenuLabels(QMenu *menu)
+{
+    QStringList out;
+    if (!menu)
+        return out;
+    for (QAction *a : menu->actions())
+        if (!a->isSeparator())
+            out << a->text();
+    return out;
+}
+
 QByteArray fileContents(const QString &path)
 {
     QFile f(path);
@@ -276,6 +288,8 @@ private slots:
     void contextMenuOutsideSelectionReplacesTarget();
     void menuActionsUseFrozenTarget();
     void copyPathActionsWriteTextToClipboard();
+    void contextMenuCompositionByTarget();
+    void pasteOverSubfolderUsesCurrentDirectory();
     void openWithUsesDesktopPathAndSeparateArgs();
     void gioLaunchPassesAccentedPathToDesktopApp();
     void openWithLaunchFailureReportsStatus();
@@ -755,6 +769,167 @@ void FileTabTest::copyPathActionsWriteTextToClipboard()
     QCOMPARE(many->text(), expectedPaths);
 }
 
+void FileTabTest::contextMenuCompositionByTarget()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(QDir(root).filePath(QStringLiteral("sub"))));
+    for (const QString &name : { QStringLiteral("alpha.txt"), QStringLiteral("beta.txt"),
+                                 QStringLiteral("arquivo.zip") }) {
+        QFile f(QDir(root).filePath(name));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QVERIFY(f.write("conteudo\n") > 0);
+    }
+    QGuiApplication::clipboard()->clear();
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) >= 4, 3000);
+
+    struct Snapshot {
+        QStringList labels;
+        bool pasteEnabled = false;
+    };
+    auto capture = [view](const QModelIndex &index) {
+        Snapshot snap;
+        setContextMenuHookForTests([&snap](QMenu *menu, const QStringList &) {
+            snap.labels = directMenuLabels(menu);
+            QAction *paste = actionNamed(menu, QStringLiteral("Colar"));
+            snap.pasteEnabled = paste && paste->isEnabled();
+            QTimer::singleShot(0, [] { closePopups(); });
+        });
+        const auto reset = qScopeGuard([] { setContextMenuHookForTests({}); });
+        openContextMenu(view, index);
+        return snap;
+    };
+    auto verify = [](const Snapshot &snap, const QStringList &expected, const char *target) {
+        QVERIFY2(snap.labels == expected,
+                 qPrintable(QStringLiteral("%1: %2").arg(QLatin1String(target),
+                                                         snap.labels.join(QLatin1String(" | ")))));
+        QVERIFY2(!snap.pasteEnabled, "Colar deve ficar desabilitado com clipboard limpo");
+    };
+
+    const QStringList emptyExpected{
+        QStringLiteral("Nova pasta…"), QStringLiteral("Novo"), QStringLiteral("Colar"),
+        QStringLiteral("Atualizar"), QStringLiteral("Exibir"), QStringLiteral("Abrir terminal aqui"),
+        QStringLiteral("Propriedades da pasta")
+    };
+    const QStringList fileExpected{
+        QStringLiteral("Abrir"), QStringLiteral("Abrir com…"), QStringLiteral("Copiar caminho"),
+        QStringLiteral("Novo"), QStringLiteral("Copiar"), QStringLiteral("Recortar"),
+        QStringLiteral("Colar"), QStringLiteral("Renomear"), QStringLiteral("Mover para a lixeira"),
+        QStringLiteral("Excluir permanentemente"), QStringLiteral("Compactar…"),
+        QStringLiteral("Propriedades")
+    };
+    const QStringList dirExpected{
+        QStringLiteral("Abrir"), QStringLiteral("Abrir em nova aba"),
+        QStringLiteral("Abrir terminal nesta pasta"), QStringLiteral("Copiar caminho"),
+        QStringLiteral("Novo"), QStringLiteral("Copiar"), QStringLiteral("Recortar"),
+        QStringLiteral("Colar"), QStringLiteral("Renomear"), QStringLiteral("Mover para a lixeira"),
+        QStringLiteral("Excluir permanentemente"), QStringLiteral("Compactar…"),
+        QStringLiteral("Propriedades")
+    };
+    const QStringList manyExpected{
+        QStringLiteral("Copiar"), QStringLiteral("Recortar"), QStringLiteral("Copiar caminhos"),
+        QStringLiteral("Colar"), QStringLiteral("Compactar…"), QStringLiteral("Mover para a lixeira"),
+        QStringLiteral("Excluir permanentemente"), QStringLiteral("Novo")
+    };
+
+    verify(capture(QModelIndex()), emptyExpected, "area vazia");
+
+    const QModelIndex alpha = findRowNamed(view, QStringLiteral("alpha.txt"));
+    QVERIFY(alpha.isValid());
+
+    view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->setCurrentIndex(alpha);
+    verify(capture(alpha), fileExpected, "arquivo");
+
+    const QModelIndex subNow = findRowNamed(view, QStringLiteral("sub"));
+    QVERIFY(subNow.isValid());
+    view->selectionModel()->select(subNow, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->setCurrentIndex(subNow);
+    verify(capture(subNow), dirExpected, "pasta");
+
+    const QModelIndex alphaNow = findRowNamed(view, QStringLiteral("alpha.txt"));
+    const QModelIndex betaNow = findRowNamed(view, QStringLiteral("beta.txt"));
+    QVERIFY(alphaNow.isValid());
+    QVERIFY(betaNow.isValid());
+    view->selectionModel()->select(alphaNow, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->setCurrentIndex(alphaNow);
+    view->selectionModel()->select(betaNow, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    verify(capture(alphaNow), manyExpected, "selecao multipla");
+
+    const QModelIndex zipNow = findRowNamed(view, QStringLiteral("arquivo.zip"));
+    QVERIFY(zipNow.isValid());
+    QStringList archiveExpected = fileExpected;
+    archiveExpected.insert(archiveExpected.size() - 1, QStringLiteral("Extrair aqui"));
+    archiveExpected.insert(archiveExpected.size() - 1, QStringLiteral("Extrair em pasta própria"));
+    verify(capture(zipNow), archiveExpected, "arquivo compactado");
+}
+
+void FileTabTest::pasteOverSubfolderUsesCurrentDirectory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    const QString sub = QDir(root).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(sub));
+    const QString source = QDir(root).filePath(QStringLiteral("origem.txt"));
+    {
+        QFile f(source);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QVERIFY(f.write("conteudo\n") > 0);
+    }
+    const QString inside = QDir(sub).filePath(QStringLiteral("inside.txt"));
+    {
+        QFile f(inside);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QVERIFY(f.write("dentro\n") > 0);
+    }
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) >= 2, 3000);
+
+    const QModelIndex srcRow = findRowNamed(view, QStringLiteral("origem.txt"));
+    QVERIFY(srcRow.isValid());
+    view->selectionModel()->select(srcRow, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->setCurrentIndex(srcRow);
+    runMenuAction(QStringList{QStringLiteral("Copiar")});
+    openContextMenu(view, srcRow);
+    const QMimeData *clip = QGuiApplication::clipboard()->mimeData();
+    QVERIFY(clip && clip->hasUrls());
+
+    const QModelIndex subRow = findRowNamed(view, QStringLiteral("sub"));
+    QVERIFY(subRow.isValid());
+    runMenuAction(QStringList{QStringLiteral("Colar")});
+    openContextMenu(view, subRow);
+
+    const QString copyName = QStringLiteral("origem (cópia).txt");
+    const QString inRoot = QDir(root).filePath(copyName);
+    const QString inSub = QDir(sub).filePath(copyName);
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(inRoot), 3000);
+    QVERIFY2(!QFileInfo::exists(inSub), "colar sobre a subpasta nao pode usar o item como destino");
+
+    QVERIFY(tab.goTo(sub));
+    QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("inside.txt")).isValid(), 3000);
+    const QModelIndex insideRow = findRowNamed(view, QStringLiteral("inside.txt"));
+    QVERIFY(insideRow.isValid());
+    runMenuAction(QStringList{QStringLiteral("Colar")});
+    openContextMenu(view, insideRow);
+    const QString inSubAgain = QDir(sub).filePath(QStringLiteral("origem.txt"));
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(inSubAgain), 3000);
+    QCOMPARE(fileContents(inRoot), QByteArray("conteudo\n"));
+    QCOMPARE(fileContents(inSubAgain), QByteArray("conteudo\n"));
+}
+
 void FileTabTest::openWithUsesDesktopPathAndSeparateArgs()
 {
     QTemporaryDir dir;
@@ -1074,8 +1249,7 @@ void FileTabTest::propertiesOfCurrentFolder()
     auto *view = tab.findChild<QTreeView *>();
     QVERIFY(view);
     QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("pasta-de-testes")).isValid(), 3000);
-    const QModelIndex row = findRowNamed(view, QStringLiteral("pasta-de-testes"));
-    QVERIFY(row.isValid());
+    QVERIFY(tab.goTo(sub));
 
     bool seen = false;
     QString seenText;
@@ -1097,7 +1271,7 @@ void FileTabTest::propertiesOfCurrentFolder()
 
     runMenuAction(QStringList{QStringLiteral("Propriedades da pasta")},
                   [inspect] { QTimer::singleShot(0, inspect); });
-    openContextMenu(view, row);
+    openContextMenu(view);
 
     QVERIFY2(seen, "a ação Propriedades da pasta deve abrir o diálogo");
     QVERIFY2(seenText.contains(QStringLiteral("pasta-de-testes")),
