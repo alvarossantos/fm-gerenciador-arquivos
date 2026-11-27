@@ -1,5 +1,6 @@
 #pragma once
 #include <QModelIndex>
+#include <QSize>
 #include <QStringList>
 #include <QWidget>
 
@@ -92,4 +93,7 @@ private:
     int m_histIdx = -1;
     bool m_iconMode = false;
     int m_zoom = 100;
+    QSize m_treeIconBase;
+    QSize m_gridIconBase;
+    QSize m_gridBase;
 };

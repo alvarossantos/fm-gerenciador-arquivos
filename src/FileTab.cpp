@@ -181,6 +181,14 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_icons->setMovement(QListView::Static);
     m_icons->setIconSize(QSize(72, 72));
     m_icons->setGridSize(QSize(112, 112));
+    m_gridIconBase = m_icons->iconSize();
+    m_gridBase = m_icons->gridSize();
+    m_treeIconBase = m_tree->iconSize();
+    if (m_treeIconBase.width() <= 0) {
+        const int pm = style()->pixelMetric(QStyle::PM_ListViewIconSize);
+        m_treeIconBase = QSize(pm, pm);
+    }
+    m_tree->setIconSize(m_treeIconBase);
     m_icons->setSpacing(8);
     m_icons->setWordWrap(true);
     m_icons->setUniformItemSizes(false);
@@ -435,11 +443,12 @@ void FileTab::setIconMode(bool icons)
 void FileTab::setZoom(int percent)
 {
     m_zoom = qBound(50, percent, 200);
-    const int side = 72 * m_zoom / 100;
-    const int cell = qMax(96, 112 * m_zoom / 100);
-    m_icons->setIconSize(QSize(side, side));
+    const int treeSide = qMax(8, m_treeIconBase.width() * m_zoom / 100);
+    const int gridSide = qMax(16, m_gridIconBase.width() * m_zoom / 100);
+    const int cell = qMax(96, m_gridBase.width() * m_zoom / 100);
+    m_icons->setIconSize(QSize(gridSide, gridSide));
     m_icons->setGridSize(QSize(cell, cell));
-    m_tree->setIconSize(QSize(side, side));
+    m_tree->setIconSize(QSize(treeSide, treeSide));
     emit zoomChanged(m_zoom);
 }
 

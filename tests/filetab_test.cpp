@@ -187,6 +187,8 @@ private slots:
     void zoomChangesIconAndGridSize();
     void zoomClampsAndSurvivesModeSwitch();
     void viewRefinementsAreApplied();
+    void zoomResetRestoresInitialSizes();
+    void sizeColumnCellsAreRightAligned();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -813,6 +815,66 @@ void FileTabTest::viewRefinementsAreApplied()
     for (int col : {1, 2, 3})
         QVERIFY2(tree->model()->headerData(col, Qt::Horizontal, Qt::TextAlignmentRole).toInt() & Qt::AlignRight,
                  qPrintable(QString("coluna %1 sem alinhamento a direita").arg(col)));
+}
+
+void FileTabTest::zoomResetRestoresInitialSizes()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+
+    const QSize initialTreeIcon = tree->iconSize();
+    const QSize initialGrid = icons->gridSize();
+    QVERIFY(!initialGrid.isEmpty());
+
+    tab.setZoom(150);
+    QVERIFY(icons->gridSize() != initialGrid);
+
+    tab.setZoom(100);
+    QCOMPARE(tree->iconSize(), initialTreeIcon);
+    QCOMPARE(icons->gridSize(), initialGrid);
+}
+
+void FileTabTest::sizeColumnCellsAreRightAligned()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString file = QDir(dir.path()).filePath(QStringLiteral("medicao.txt"));
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    QCOMPARE(f.write("1234567890"), 10);
+    f.close();
+
+    FileTab tab(dir.path());
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    auto *model = tree->model();
+    QVERIFY(model);
+
+    const QModelIndex root = tree->rootIndex();
+    QVERIFY(root.isValid());
+    QModelIndex sizeIndex;
+    QTRY_VERIFY_WITH_TIMEOUT([&] {
+        for (int row = 0; row < model->rowCount(root); ++row) {
+            if (model->index(row, 0, root).data(Qt::DisplayRole).toString() == QStringLiteral("medicao.txt")) {
+                sizeIndex = model->index(row, 1, root);
+                return true;
+            }
+        }
+        return false;
+    }(), 2000);
+    QVERIFY(sizeIndex.isValid());
+    QVERIFY2(!sizeIndex.data(Qt::DisplayRole).toString().isEmpty(), "celula de tamanho vazia");
+    QVERIFY2(sizeIndex.data(Qt::TextAlignmentRole).toInt() & Qt::AlignRight,
+             "valor de tamanho precisa estar alinhado a direita");
 }
 
 QTEST_MAIN(FileTabTest)

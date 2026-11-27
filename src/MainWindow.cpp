@@ -181,6 +181,7 @@ FileTab *MainWindow::addTab(const QString &path)
 {
     auto *tab = new FileTab(path);
     tab->setIconMode(m_iconsAct->isChecked());
+    tab->setZoom(currentTab() ? currentTab()->zoom() : 100);
     tab->setShowHidden(m_hiddenAct->isChecked());
     tab->setPreviewVisible(m_previewAct->isChecked());
 
