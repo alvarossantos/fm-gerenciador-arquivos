@@ -2709,7 +2709,14 @@ void FileTabTest::nonModalFromMenu()
     QVERIFY(!QApplication::activeModalWidget());
 
     closePopups();
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
     QApplication::setActiveWindow(&tab);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
     tab.setFocus();
     QTest::keyClick(&tab, Qt::Key_C, Qt::ControlModifier);
     const QMimeData *md = QGuiApplication::clipboard()->mimeData();

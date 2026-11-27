@@ -1,8 +1,10 @@
 #include "PropertiesDialog.h"
 
 #include <QClipboard>
+#include <QCloseEvent>
 #include <QDateTime>
 #include <QDesktopServices>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QGuiApplication>
@@ -14,11 +16,85 @@
 #include <QPushButton>
 #include <QStyle>
 #include <QTabWidget>
+#include <QThread>
 #include <QToolBox>
 #include <QUrl>
 #include <QVBoxLayout>
 
+#include <mutex>
+
 namespace {
+
+std::atomic_int activeScans{ 0 };
+std::mutex scanHookMutex;
+ScanItemHook scanHook;
+
+ScanItemHook currentScanHook()
+{
+    const std::lock_guard<std::mutex> lock(scanHookMutex);
+    return scanHook;
+}
+
+class DirectoryScanWorker : public QObject
+{
+    Q_OBJECT
+public:
+    DirectoryScanWorker(QString path, std::shared_ptr<std::atomic_bool> cancel)
+        : m_path(std::move(path)), m_cancel(std::move(cancel))
+    {
+        activeScans.fetch_add(1);
+    }
+
+    void run()
+    {
+        qint64 bytes = 0;
+        int folders = 0;
+        QStringList warnings;
+        const QFileInfo info(m_path);
+        if (info.isDir() && !info.isSymLink()) {
+            scanDirectory(m_path, bytes, folders, warnings);
+        } else if (!m_cancel->load()) {
+            bytes = info.size();
+        }
+        emit scanDone(m_path, bytes, folders, warnings);
+        activeScans.fetch_sub(1);
+        thread()->quit();
+    }
+
+signals:
+    void scanDone(const QString &path, qint64 bytes, int folders, const QStringList &warnings);
+
+private:
+    void scanDirectory(const QString &path, qint64 &bytes, int &folders, QStringList &warnings)
+    {
+        QDir dir(path);
+        if (!dir.isReadable()) {
+            warnings << PropertiesDialog::tr("Pasta ilegível: %1").arg(path);
+            return;
+        }
+        QDirIterator it(path, QDir::AllEntries | QDir::Hidden | QDir::NoDotAndDotDot,
+                        QDirIterator::NoIteratorFlags);
+        while (it.hasNext()) {
+            if (m_cancel->load())
+                return;
+            if (const ScanItemHook hook = currentScanHook())
+                hook();
+            it.next();
+            const QFileInfo entry = it.fileInfo();
+            if (entry.isSymLink()) {
+                continue;
+            } else if (entry.isDir()) {
+                ++folders;
+                scanDirectory(entry.absoluteFilePath(), bytes, folders, warnings);
+            } else {
+                bytes += entry.size();
+            }
+        }
+    }
+
+    QString m_path;
+    std::shared_ptr<std::atomic_bool> m_cancel;
+};
 
 QWidget *generalSection(const QFileInfo &fi, QLabel **size, QLabel **folders)
 {
@@ -70,6 +146,17 @@ QWidget *permissionsSection(const QFileInfo &fi)
 }
 
 } // namespace
+
+void setScanItemHookForTests(ScanItemHook hook)
+{
+    const std::lock_guard<std::mutex> lock(scanHookMutex);
+    scanHook = std::move(hook);
+}
+
+int PropertiesDialog::activeScansForTests()
+{
+    return activeScans.load();
+}
 
 PropertiesDialog::PropertiesDialog(const QString &path, const UiPreferences &prefs, QWidget *parent)
     : QDialog(parent), m_path(QFileInfo(path).absoluteFilePath()), m_prefs(prefs),
@@ -151,6 +238,12 @@ PropertiesDialog::PropertiesDialog(const QString &path, const UiPreferences &pre
     buttons->addWidget(openParent);
     buttons->addWidget(close);
     root->addLayout(buttons);
+    startScan();
+}
+
+PropertiesDialog::~PropertiesDialog()
+{
+    requestCancel();
 }
 
 QString PropertiesDialog::path() const
@@ -161,6 +254,28 @@ QString PropertiesDialog::path() const
 void PropertiesDialog::requestCancel()
 {
     m_cancel->store(true);
+}
+
+void PropertiesDialog::closeEvent(QCloseEvent *event)
+{
+    requestCancel();
+    QDialog::closeEvent(event);
+}
+
+void PropertiesDialog::startScan()
+{
+    auto *thread = new QThread;
+    auto *worker = new DirectoryScanWorker(m_path, m_cancel);
+    worker->moveToThread(thread);
+    connect(worker, &DirectoryScanWorker::scanDone, this,
+            [this](const QString &path, qint64 bytes, int folders, const QStringList &warnings) {
+                setScanResult(bytes, folders, warnings);
+                emit scanFinished(path, bytes, folders, warnings);
+            });
+    connect(thread, &QThread::finished, worker, &QObject::deleteLater);
+    connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+    connect(thread, &QThread::started, worker, &DirectoryScanWorker::run);
+    thread->start();
 }
 
 void PropertiesDialog::setScanResult(qint64 bytes, int folders, const QStringList &warnings)
@@ -176,3 +291,5 @@ void PropertiesDialog::setScanStatus(const QString &status)
 {
     m_status->setText(status);
 }
+
+#include "PropertiesDialog.moc"
