@@ -92,6 +92,10 @@ mostra as mesmas ações de item e não oferece forma de ajustar a visão ali me
   Mover para a lixeira, Excluir permanentemente. Sem Renomear/Propriedades de um
   item só. `Novo ▸` permanece disponível, como hoje.
 - `Colar` continua desabilitado quando a área de transferência não tem URLs.
+- **Destino da colagem:** sempre `m_path` da aba, inclusive quando o menu é
+  aberto sobre arquivo ou subpasta; `Ctrl+V` segue a mesma regra. O alvo do menu
+  serve às ações sobre itens, não ao destino da colagem. Uma eventual action
+  futura será explícita, `Colar nesta pasta`, e fica fora deste recorte.
 
 ### Submenu Novo
 
@@ -143,7 +147,9 @@ devem permanecer os atuais.
   arquivo, pasta e seleção múltipla.
 - Clique em item já selecionado preserva o grupo; clique fora da seleção torna
   aquele item o único alvo; as ações agem sobre o alvo esperado.
-- `Colar` desabilitado com área de transferência vazia.
+- `Colar` desabilitado com área de transferência vazia. Aberto o menu sobre uma
+  subpasta, `Colar` cria o item ao lado dela; depois de entrar na subpasta, a
+  mesma ação cria o item dentro dela.
 - Criar por tipo e por modelo gera nome, extensão e conteúdo esperados.
 - `Abrir com…`: arquivo com associações, sem associações, caminho com espaços e
   acentos e cancelamento sem iniciar aplicativo.
