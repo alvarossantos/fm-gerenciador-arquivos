@@ -160,7 +160,7 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_tree->setEditTriggers(QAbstractItemView::EditKeyPressed);
     m_tree->setUniformRowHeights(true);
-    m_tree->setAlternatingRowColors(false);
+    m_tree->setAlternatingRowColors(true);
     m_tree->setDragEnabled(true);
     m_tree->setAcceptDrops(true);
     m_tree->setDragDropMode(QAbstractItemView::DragDrop);
@@ -181,7 +181,7 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_icons->setMovement(QListView::Static);
     m_icons->setIconSize(QSize(72, 72));
     m_icons->setGridSize(QSize(112, 112));
-    m_icons->setSpacing(4);
+    m_icons->setSpacing(8);
     m_icons->setWordWrap(true);
     m_icons->setUniformItemSizes(false);
     m_icons->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -199,6 +199,7 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     // ----- painel de lugares -----
     m_places = new QListWidget;
     m_places->setObjectName(QStringLiteral("places"));
+    m_places->setMinimumWidth(190);
     m_places->setFrameShape(QFrame::NoFrame);
     m_places->setIconSize(QSize(20, 20));
 

@@ -6,11 +6,13 @@
 #include <QClipboard>
 #include <QDir>
 #include <QFileSystemModel>
+#include <QHeaderView>
 #include <QImage>
 #include <QElapsedTimer>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -184,6 +186,7 @@ private slots:
     void closingTabKeepsScratchWhenProcessDoesNotStop();
     void zoomChangesIconAndGridSize();
     void zoomClampsAndSurvivesModeSwitch();
+    void viewRefinementsAreApplied();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -783,6 +786,33 @@ void FileTabTest::zoomClampsAndSurvivesModeSwitch()
     tab.setIconMode(false);
     tab.setIconMode(true);
     QCOMPARE(tab.zoom(), 150);
+}
+
+void FileTabTest::viewRefinementsAreApplied()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QCOMPARE(tree->header()->sectionResizeMode(0), QHeaderView::Stretch);
+    QVERIFY(tree->alternatingRowColors());
+
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+    QCOMPARE(icons->spacing(), 8);
+
+    auto *places = tab.findChild<QListWidget *>(QStringLiteral("places"));
+    QVERIFY(places);
+    QVERIFY(places->minimumWidth() >= 190);
+
+    for (int col : {1, 2, 3})
+        QVERIFY2(tree->model()->headerData(col, Qt::Horizontal, Qt::TextAlignmentRole).toInt() & Qt::AlignRight,
+                 qPrintable(QString("coluna %1 sem alinhamento a direita").arg(col)));
 }
 
 QTEST_MAIN(FileTabTest)
