@@ -24,6 +24,7 @@ private slots:
     void atomicReplaceAppliesNewPalette();
     void missingFileAtStartupUsesDefault();
     void camelCasePaletteWorks();
+    void focusAndDisabledStatesUsePalette();
 
 private:
     void writeDirect(const QString &path, const QString &json);
@@ -176,6 +177,45 @@ void ThemeManagerTest::camelCasePaletteWorks()
 
     QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#123456")));
     QVERIFY(qApp->styleSheet().contains(QStringLiteral("#abcdef")));
+}
+
+void ThemeManagerTest::focusAndDisabledStatesUsePalette()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("colors.json"));
+    writeDirect(path, QStringLiteral("{\"surface\":\"#112233\",\"onSurface\":\"#445566\","
+                                     "\"primary\":\"#778899\",\"onPrimary\":\"#aabbcc\"}"));
+
+    ThemeManager theme;
+    theme.setThemeFile(path);
+    const QString qss = qApp->styleSheet();
+    const QPalette p = qApp->palette();
+
+    const auto hasRuleWith = [&qss](const QString &selector, const QString &color) {
+        const int at = qss.indexOf(selector);
+        return at >= 0 && qss.mid(at, 240).contains(color);
+    };
+    QVERIFY2(hasRuleWith(QStringLiteral("QTreeView:focus"),
+                         p.color(QPalette::Highlight).name()),
+             qPrintable(qss));
+    QVERIFY2(hasRuleWith(QStringLiteral("QListView:focus"),
+                         p.color(QPalette::Highlight).name()),
+             qPrintable(qss));
+    QVERIFY2(hasRuleWith(QStringLiteral("QMenu::item:disabled"),
+                         p.color(QPalette::Disabled, QPalette::Text).name(QColor::HexArgb)),
+             qPrintable(qss));
+    QVERIFY2(hasRuleWith(QStringLiteral("QPushButton:disabled"),
+                         p.color(QPalette::Disabled, QPalette::ButtonText).name(QColor::HexArgb)),
+             qPrintable(qss));
+    QVERIFY(qss.contains(p.color(QPalette::HighlightedText).name()));
+
+    // JSON inválido não pode trocar a paleta nem as regras já aplicadas.
+    const QString before = qApp->styleSheet();
+    writeDirect(path, QStringLiteral("{"));
+    QVERIFY(QMetaObject::invokeMethod(&theme, "reload"));
+    QCOMPARE(qApp->styleSheet(), before);
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
 }
 
 QTEST_MAIN(ThemeManagerTest)

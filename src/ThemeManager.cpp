@@ -180,9 +180,17 @@ void ThemeManager::applyShellColors(const QHash<QString, QColor> &c)
         "QMenu::item { padding: 6px 22px; border-radius: 6px; }"
         "QMenu::item:selected { background: %1; color: %2; }"
         "QSplitter::handle { background: %6; }"
-        "QStatusBar { background: %4; }")
+        "QStatusBar { background: %4; }"
+        "QTreeView:focus, QListView:focus, QListWidget:focus { border: 1px solid %9; outline: 0; }"
+        "QTreeView::item:selected:focus, QListView::item:selected:focus, QListWidget::item:selected:focus"
+        "  { background: %9; color: %10; }"
+        "QMenu::item:disabled { color: %11; background: transparent; }"
+        "QPushButton:disabled { color: %11; border: 1px solid %6; background: %4; }")
         .arg(priCont.name(), onPriCont.name(), cHigh.name(), cMid.name(), onSurface.name(),
-             outline.name(), cLow.name(), primary.name());
+             outline.name(), cLow.name(), primary.name())
+        .arg(p.color(QPalette::Highlight).name())
+        .arg(p.color(QPalette::HighlightedText).name())
+        .arg(p.color(QPalette::Disabled, QPalette::Text).name(QColor::HexArgb));
 
     qApp->setPalette(p);
     qApp->setStyleSheet(qss);
