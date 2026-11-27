@@ -21,6 +21,7 @@ using RestoreBackupHook = std::function<bool(const QString &, const QString &)>;
 void setRestoreBackupHookForTests(RestoreBackupHook hook);
 using WaitForProcessHook = std::function<bool(QProcess *, int)>;
 void setWaitForProcessHookForTests(WaitForProcessHook hook);
+void setPlacesForTests(const QStringList &paths);
 
 class FileTab : public QWidget {
     Q_OBJECT
@@ -31,7 +32,7 @@ public:
     bool canGoBack() const { return m_histIdx > 0; }
     bool canGoForward() const { return m_histIdx < m_history.size() - 1; }
 
-    void goTo(const QString &path, bool addHistory = true);
+    bool goTo(const QString &path, bool addHistory = true);
     void back();
     void forward();
     void up();
@@ -53,6 +54,7 @@ private:
     void showContextMenu(const QPoint &pos);
     void onSelectionChanged();
     void updatePreview();
+    void updatePlacesSelection();
 
     void copyToClipboard(bool cut);
     void paste();
