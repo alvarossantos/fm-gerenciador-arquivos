@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QPalette>
 #include <QSaveFile>
+#include <QSignalSpy>
 #include <QTemporaryDir>
 
 #include "ThemeManager.h"
@@ -18,6 +19,8 @@ private slots:
     void init();
     void validJsonAppliesPalette();
     void invalidJsonKeepsLastPalette();
+    void invalidReloadDoesNotEmitDefault();
+    void missingFileKeepsLastPalette();
     void atomicReplaceAppliesNewPalette();
     void missingFileAtStartupUsesDefault();
     void camelCasePaletteWorks();
@@ -88,6 +91,47 @@ void ThemeManagerTest::invalidJsonKeepsLastPalette()
     writeDirect(path, QStringLiteral("{"));
     QTest::qWait(400);
     QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+}
+
+void ThemeManagerTest::invalidReloadDoesNotEmitDefault()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("colors.json"));
+    writeDirect(path, QStringLiteral("{\"surface\":\"#112233\",\"primary\":\"#445566\"}"));
+
+    ThemeManager theme;
+    theme.setThemeFile(path);
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+
+    QSignalSpy applied(&theme, &ThemeManager::themeApplied);
+    writeDirect(path, QStringLiteral("{"));
+    // Invoca o reload diretamente: prova que o ramo inválido foi executado,
+    // independentemente do debounce do QFileSystemWatcher.
+    QVERIFY(QMetaObject::invokeMethod(&theme, "reload"));
+    QCOMPARE(applied.count(), 0);
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+}
+
+void ThemeManagerTest::missingFileKeepsLastPalette()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.filePath(QStringLiteral("colors.json"));
+    writeDirect(path, QStringLiteral("{\"surface\":\"#112233\",\"primary\":\"#445566\"}"));
+
+    ThemeManager theme;
+    theme.setThemeFile(path);
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+
+    QVERIFY(QFile::remove(path));
+    QTest::qWait(400);
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+
+    // O watcher do diretório deve reaplicar quando o arquivo voltar a existir.
+    writeDirect(path, QStringLiteral("{\"surface\":\"#abcdef\",\"primary\":\"#445566\"}"));
+    QTRY_COMPARE_WITH_TIMEOUT(qApp->palette().color(QPalette::Window),
+                              QColor(QStringLiteral("#abcdef")), 2000);
 }
 
 void ThemeManagerTest::atomicReplaceAppliesNewPalette()

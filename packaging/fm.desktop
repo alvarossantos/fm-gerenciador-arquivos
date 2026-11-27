@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=fm
+GenericName=Gerenciador de Arquivos
+Icon=folder
+Terminal=false
+Categories=System;FileManager;FileTools;
+MimeType=inode/directory;
+TryExec=/home/alvaro/.local/bin/fm
+Exec=/home/alvaro/.local/bin/fm --theme-file /home/alvaro/.local/state/quickshell/user/generated/app-palette.json %f

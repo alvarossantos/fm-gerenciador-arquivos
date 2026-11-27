@@ -91,7 +91,9 @@ void ThemeManager::reload()
 
     QFile f(m_path);
     if (!f.open(QIODevice::ReadOnly)) {
-        applyDefault();
+        // Mesma regra do JSON inválido: o arquivo pode estar sendo recriado.
+        if (!m_applied)
+            applyDefault();
         return;
     }
     const auto colors = parseColors(f.readAll());
