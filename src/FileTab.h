@@ -47,6 +47,8 @@ public:
     static constexpr int PlaceGroupRole = Qt::UserRole + 2;
 
     void applyUiPreferences(const UiPreferences &prefs);
+    QString menuLabel(const QString &label, const QString &shortcut = QString()) const;
+    void compactMenuSeparators(QMenu *menu) const;
 
     QString desktopFileForId(const QString &id) const;
     QString currentPath() const { return m_path; }

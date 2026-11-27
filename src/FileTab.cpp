@@ -40,6 +40,37 @@
 
 #include <memory>
 
+QString FileTab::menuLabel(const QString &label, const QString &shortcut) const
+{
+    if (m_ui.preset == UiPreset::Compact || shortcut.isEmpty())
+        return label;
+    return label + QLatin1Char('\t') + shortcut;
+}
+
+void FileTab::compactMenuSeparators(QMenu *menu) const
+{
+    if (!menu)
+        return;
+    const QList<QAction *> actions = menu->actions();
+    bool previousSeparator = true;
+    for (QAction *a : actions) {
+        if (!a->isSeparator()) {
+            previousSeparator = false;
+            continue;
+        }
+        if (previousSeparator) {
+            menu->removeAction(a);
+            delete a;
+        }
+        previousSeparator = true;
+    }
+    const QList<QAction *> tail = menu->actions();
+    for (auto it = tail.crbegin(); it != tail.crend() && (*it)->isSeparator(); ++it) {
+        menu->removeAction(*it);
+        delete *it;
+    }
+}
+
 class DensityDelegate : public QStyledItemDelegate
 {
 public:
@@ -859,78 +890,88 @@ void FileTab::showContextMenu(const QPoint &pos)
     const QString first = sel.value(0);
 
     QMenu menu(this);
-    const auto addPaste = [this, &menu] {
-        QAction *act = menu.addAction(QIcon::fromTheme("edit-paste"), tr("Colar"), this, [this] { paste(); });
+    const auto label = [this](const QString &text, const QString &shortcut = QString()) {
+        return menuLabel(text, shortcut);
+    };
+    const auto addPaste = [this, &menu, &label] {
+        QAction *act = menu.addAction(QIcon::fromTheme("edit-paste"), label(tr("Colar")), this,
+                                      [this] { paste(); });
+        act->setObjectName(QStringLiteral("pasteAction"));
+        act->setData(m_path);
         const QMimeData *md = QGuiApplication::clipboard()->mimeData();
         act->setEnabled(md && md->hasUrls());
     };
 
     if (sel.isEmpty()) {
-        menu.addAction(QIcon::fromTheme("folder-new"), tr("Nova pasta…"), this, [this] { newFolder(); });
+        menu.addAction(QIcon::fromTheme("folder-new"), label(tr("Nova pasta…")), this, [this] { newFolder(); });
         addNewMenu(&menu);
         menu.addSeparator();
         addPaste();
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("view-refresh"), tr("Atualizar"), this, [this] { refreshModel(); });
-        QMenu *view = menu.addMenu(tr("Exibir"));
+        menu.addAction(QIcon::fromTheme("view-refresh"), label(tr("Atualizar")), this, [this] { refreshModel(); });
+        QMenu *view = menu.addMenu(label(tr("Exibir")));
         addViewMenu(view);
-        menu.addAction(tr("Abrir terminal aqui"), this, [this] { openTerminal(m_path); });
-        menu.addAction(tr("Propriedades da pasta"), this, [this] { showProperties(m_path); });
+        menu.addAction(label(tr("Abrir terminal aqui")), this, [this] { openTerminal(m_path); });
+        menu.addAction(label(tr("Propriedades da pasta")), this, [this] { showProperties(m_path); });
     } else if (one && oneDir) {
-        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
-        menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
-        menu.addAction(tr("Abrir terminal nesta pasta"), this, [this, first] { openTerminal(first); });
-        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
+        menu.addAction(label(tr("Abrir"), QStringLiteral("Enter")), this, [this, first] { openPath(first); });
+        menu.addAction(label(tr("Abrir em nova aba")), this, [this, first] { emit openInNewTab(first); });
+        menu.addAction(label(tr("Abrir terminal nesta pasta")), this, [this, first] { openTerminal(first); });
+        menu.addAction(label(tr("Copiar caminho")), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
         menu.addSeparator();
         addNewMenu(&menu);
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        menu.addAction(QIcon::fromTheme("edit-copy"), label(tr("Copiar")), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), label(tr("Recortar")), this, [this, sel] { copyToClipboard(true, sel); });
         addPaste();
         menu.addSeparator();
-        menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
-        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
-        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addAction(label(tr("Renomear")), this, [this, first] { renameCurrent(first); });
+        menu.addAction(QIcon::fromTheme("user-trash"), label(tr("Mover para a lixeira")), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), label(tr("Excluir permanentemente")), this, [this, sel] { deleteSelected(sel); });
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        menu.addAction(QIcon::fromTheme("archive-insert"), label(tr("Compactar…")), this, [this, sel] { compress(sel); });
         menu.addSeparator();
-        menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
+        menu.addAction(label(tr("Propriedades"), QStringLiteral("Alt+Enter")), this,
+                      [this, first] { showProperties(first); });
     } else if (one) {
-        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
-        QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), tr("Abrir com…"));
+        menu.addAction(label(tr("Abrir"), QStringLiteral("Enter")), this, [this, first] { openPath(first); });
+        QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), label(tr("Abrir com…")));
         addOpenWithMenu(openWith, first);
-        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
+        menu.addAction(label(tr("Copiar caminho")), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
         menu.addSeparator();
         addNewMenu(&menu);
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        menu.addAction(QIcon::fromTheme("edit-copy"), label(tr("Copiar")), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), label(tr("Recortar")), this, [this, sel] { copyToClipboard(true, sel); });
         addPaste();
         menu.addSeparator();
-        menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
-        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
-        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addAction(label(tr("Renomear")), this, [this, first] { renameCurrent(first); });
+        menu.addAction(QIcon::fromTheme("user-trash"), label(tr("Mover para a lixeira")), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), label(tr("Excluir permanentemente")), this, [this, sel] { deleteSelected(sel); });
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        menu.addAction(QIcon::fromTheme("archive-insert"), label(tr("Compactar…")), this, [this, sel] { compress(sel); });
         if (!archiveSuffix(first).isEmpty()) {
-            menu.addAction(QIcon::fromTheme("archive-extract"), tr("Extrair aqui"), this, [this, first] { extract(first, false); });
-            menu.addAction(tr("Extrair em pasta própria"), this, [this, first] { extract(first, true); });
+            menu.addAction(QIcon::fromTheme("archive-extract"), label(tr("Extrair aqui")), this, [this, first] { extract(first, false); });
+            menu.addAction(label(tr("Extrair em pasta própria")), this, [this, first] { extract(first, true); });
         }
         menu.addSeparator();
-        menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
+        menu.addAction(label(tr("Propriedades"), QStringLiteral("Alt+Enter")), this,
+                      [this, first] { showProperties(first); });
     } else {
-        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
-        menu.addAction(tr("Copiar caminhos"), this, [this, sel] { copyPathsToClipboard(sel); });
+        menu.addAction(QIcon::fromTheme("edit-copy"), label(tr("Copiar")), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), label(tr("Recortar")), this, [this, sel] { copyToClipboard(true, sel); });
+        menu.addAction(label(tr("Copiar caminhos")), this, [this, sel] { copyPathsToClipboard(sel); });
         addPaste();
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
-        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
-        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addAction(QIcon::fromTheme("archive-insert"), label(tr("Compactar…")), this, [this, sel] { compress(sel); });
+        menu.addAction(QIcon::fromTheme("user-trash"), label(tr("Mover para a lixeira")), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), label(tr("Excluir permanentemente")), this, [this, sel] { deleteSelected(sel); });
         menu.addSeparator();
         addNewMenu(&menu);
     }
 
+    if (m_ui.preset == UiPreset::Compact)
+        compactMenuSeparators(&menu);
     if (contextMenuHook)
         contextMenuHook(&menu, sel);
     menu.exec(v->viewport()->mapToGlobal(pos));
