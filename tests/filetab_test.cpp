@@ -31,6 +31,20 @@
 
 namespace {
 
+// Restaura a variável ao estado exato anterior, inclusive quando não existia.
+auto setTestEnv(const char *name, const QByteArray &value)
+{
+    const QByteArray old = qgetenv(name);
+    const bool wasSet = !old.isNull();
+    qputenv(name, value);
+    return qScopeGuard([name, old, wasSet] {
+        if (wasSet)
+            qputenv(name, old);
+        else
+            qunsetenv(name);
+    });
+}
+
 QAction *actionNamed(QMenu *menu, const QString &text)
 {
     if (!menu)
@@ -293,6 +307,11 @@ private slots:
     void contextMenuCompositionByTarget();
     void pasteOverSubfolderUsesCurrentDirectory();
     void openWithUsesDesktopPathAndSeparateArgs();
+    void desktopFileForIdPrefersXdgDataDirsOverDefaultHome();
+    void desktopFileForIdPrefersFirstXdgDataDir();
+    void desktopFileForIdResolvesSubdirectoryId();
+    void desktopFileForIdPrefersXdgDataHomeOverDataDirs();
+    void desktopFileForIdIgnoresRelativeXdgPaths();
     void gioLaunchPassesAccentedPathToDesktopApp();
     void openWithLaunchFailureReportsStatus();
     void openWithCancelStartsNothing();
@@ -1018,6 +1037,145 @@ void FileTabTest::openWithUsesDesktopPathAndSeparateArgs()
     QCOMPARE(call.program, QStringLiteral("gio"));
     QCOMPARE(call.args, expectedArgs);
     QVERIFY(call.cwd.isEmpty());
+}
+
+void FileTabTest::desktopFileForIdPrefersXdgDataDirsOverDefaultHome()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString fakeHome = QDir(dir.path()).filePath(QStringLiteral("fakehome"));
+    const QString xdgHome = QDir(dir.path()).filePath(QStringLiteral("xdghome"));
+    const QString dirs1 = QDir(dir.path()).filePath(QStringLiteral("dirs1"));
+    const QString dirs2 = QDir(dir.path()).filePath(QStringLiteral("dirs2"));
+    QVERIFY(QDir().mkpath(QDir(fakeHome).filePath(QStringLiteral(".local/share/applications"))));
+    for (const QString &base : {xdgHome, dirs1, dirs2})
+        QVERIFY(QDir().mkpath(QDir(base).filePath(QStringLiteral("applications"))));
+
+    const QString inHome = writeDesktopFile(
+        QDir(fakeHome).filePath(QStringLiteral(".local/share/applications/dup.desktop")),
+        QStringLiteral("Casa"), QStringLiteral("/bin/true"));
+    const QString inDirs = writeDesktopFile(
+        QDir(dirs1).filePath(QStringLiteral("applications/dup.desktop")),
+        QStringLiteral("Dados"), QStringLiteral("/bin/true"));
+    QVERIFY(!inHome.isEmpty());
+    QVERIFY(!inDirs.isEmpty());
+
+    const auto restoreHome = setTestEnv("HOME", fakeHome.toUtf8());
+    const auto restoreDataHome = setTestEnv("XDG_DATA_HOME", xdgHome.toUtf8());
+    const auto restoreDataDirs = setTestEnv("XDG_DATA_DIRS",
+                                            (dirs1 + QLatin1Char(':') + dirs2).toUtf8());
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    FileTab tab(root);
+    QCOMPARE(tab.desktopFileForId(QStringLiteral("dup.desktop")), QFileInfo(inDirs).absoluteFilePath());
+}
+
+void FileTabTest::desktopFileForIdPrefersFirstXdgDataDir()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString xdgHome = QDir(dir.path()).filePath(QStringLiteral("xdghome"));
+    const QString dirs1 = QDir(dir.path()).filePath(QStringLiteral("dirs1"));
+    const QString dirs2 = QDir(dir.path()).filePath(QStringLiteral("dirs2"));
+    for (const QString &base : {xdgHome, dirs1, dirs2})
+        QVERIFY(QDir().mkpath(QDir(base).filePath(QStringLiteral("applications"))));
+
+    const QString inDirs = writeDesktopFile(
+        QDir(dirs1).filePath(QStringLiteral("applications/dup.desktop")),
+        QStringLiteral("Primeiro"), QStringLiteral("/bin/true"));
+    QVERIFY(!writeDesktopFile(QDir(dirs2).filePath(QStringLiteral("applications/dup.desktop")),
+                              QStringLiteral("Segundo"), QStringLiteral("/bin/true")).isEmpty());
+
+    const auto restoreDataHome = setTestEnv("XDG_DATA_HOME", xdgHome.toUtf8());
+    const auto restoreDataDirs = setTestEnv("XDG_DATA_DIRS",
+                                            (dirs1 + QLatin1Char(':') + dirs2).toUtf8());
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    FileTab tab(root);
+    QCOMPARE(tab.desktopFileForId(QStringLiteral("dup.desktop")), QFileInfo(inDirs).absoluteFilePath());
+}
+
+void FileTabTest::desktopFileForIdResolvesSubdirectoryId()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString home = QDir(dir.path()).filePath(QStringLiteral("home"));
+    const QString nested = QDir(home).filePath(QStringLiteral("applications/sub/nested.desktop"));
+    QVERIFY(QDir().mkpath(QFileInfo(nested).absolutePath()));
+    QVERIFY(!writeDesktopFile(nested, QStringLiteral("Aninhado"), QStringLiteral("/bin/true")).isEmpty());
+
+    const auto restoreDataHome = setTestEnv("XDG_DATA_HOME", home.toUtf8());
+    const auto restoreDataDirs = setTestEnv("XDG_DATA_DIRS",
+                                            QDir(dir.path()).filePath(QStringLiteral("empty-dirs")).toUtf8());
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    FileTab tab(root);
+    QCOMPARE(tab.desktopFileForId(QStringLiteral("sub/nested.desktop")),
+             QFileInfo(nested).absoluteFilePath());
+    QVERIFY(tab.desktopFileForId(QStringLiteral("nested.desktop")).isEmpty());
+}
+
+void FileTabTest::desktopFileForIdPrefersXdgDataHomeOverDataDirs()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString xdgHome = QDir(dir.path()).filePath(QStringLiteral("xdghome"));
+    const QString dirs1 = QDir(dir.path()).filePath(QStringLiteral("dirs1"));
+    for (const QString &base : {xdgHome, dirs1})
+        QVERIFY(QDir().mkpath(QDir(base).filePath(QStringLiteral("applications"))));
+
+    const QString inHome = writeDesktopFile(
+        QDir(xdgHome).filePath(QStringLiteral("applications/dup.desktop")),
+        QStringLiteral("Casa"), QStringLiteral("/bin/true"));
+    QVERIFY(!writeDesktopFile(QDir(dirs1).filePath(QStringLiteral("applications/dup.desktop")),
+                              QStringLiteral("Dados"), QStringLiteral("/bin/true")).isEmpty());
+    QVERIFY(!inHome.isEmpty());
+
+    const auto restoreDataHome = setTestEnv("XDG_DATA_HOME", xdgHome.toUtf8());
+    const auto restoreDataDirs = setTestEnv("XDG_DATA_DIRS", dirs1.toUtf8());
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    FileTab tab(root);
+    QCOMPARE(tab.desktopFileForId(QStringLiteral("dup.desktop")), QFileInfo(inHome).absoluteFilePath());
+}
+
+void FileTabTest::desktopFileForIdIgnoresRelativeXdgPaths()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString previousCwd = QDir::currentPath();
+    const auto restoreCwd = qScopeGuard([&previousCwd] { QDir::setCurrent(previousCwd); });
+    QVERIFY(QDir::setCurrent(dir.path()));
+
+    // Caminhos XDG relativos devem ser ignorados; o CWD os tornaria existentes.
+    const QString relHome = QStringLiteral("relhome");
+    const QString relDirs = QStringLiteral("reldirs");
+    QVERIFY(QDir().mkpath(QDir(relHome).filePath(QStringLiteral("applications"))));
+    QVERIFY(QDir().mkpath(QDir(relDirs).filePath(QStringLiteral("applications"))));
+    QVERIFY(!writeDesktopFile(QDir(relHome).filePath(QStringLiteral("applications/dup.desktop")),
+                              QStringLiteral("RelHome"), QStringLiteral("/bin/true")).isEmpty());
+    QVERIFY(!writeDesktopFile(QDir(relDirs).filePath(QStringLiteral("applications/dup.desktop")),
+                              QStringLiteral("RelDirs"), QStringLiteral("/bin/true")).isEmpty());
+
+    const QString fakeHome = QDir(dir.path()).filePath(QStringLiteral("fakehome"));
+    QVERIFY(QDir().mkpath(QDir(fakeHome).filePath(QStringLiteral(".local/share/applications"))));
+    const QString inHome = writeDesktopFile(
+        QDir(fakeHome).filePath(QStringLiteral(".local/share/applications/dup.desktop")),
+        QStringLiteral("Casa"), QStringLiteral("/bin/true"));
+    QVERIFY(!inHome.isEmpty());
+
+    const auto restoreHome = setTestEnv("HOME", fakeHome.toUtf8());
+    const auto restoreDataHome = setTestEnv("XDG_DATA_HOME", relHome.toUtf8());
+    const auto restoreDataDirs = setTestEnv("XDG_DATA_DIRS", relDirs.toUtf8());
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    FileTab tab(root);
+    QCOMPARE(tab.desktopFileForId(QStringLiteral("dup.desktop")), QFileInfo(inHome).absoluteFilePath());
 }
 
 void FileTabTest::gioLaunchPassesAccentedPathToDesktopApp()

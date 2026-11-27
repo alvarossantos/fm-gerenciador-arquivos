@@ -244,21 +244,32 @@ QString FileTab::desktopFileForId(const QString &id) const
         return direct.absoluteFilePath();
 
     QStringList roots;
-    const QByteArray home = qgetenv("XDG_DATA_HOME");
-    if (!home.isEmpty())
-        roots << QFileInfo(QString::fromLocal8Bit(home)).absoluteFilePath();
-    roots << QDir::homePath() + QStringLiteral("/.local/share");
-    roots << QStringLiteral("/usr/local/share") << QStringLiteral("/usr/share");
+    const QString home = QString::fromLocal8Bit(qgetenv("XDG_DATA_HOME"));
+    if (!home.isEmpty() && QFileInfo(home).isAbsolute())
+        roots << QFileInfo(home).absoluteFilePath();
+    else
+        roots << QDir::homePath() + QStringLiteral("/.local/share");
 
     const QByteArray dirs = qgetenv("XDG_DATA_DIRS");
+    int absoluteDirs = 0;
     if (!dirs.isEmpty()) {
         for (const QByteArray &part : dirs.split(':')) {
-            if (!part.isEmpty())
-                roots << QFileInfo(QString::fromLocal8Bit(part)).absoluteFilePath();
+            const QString dir = QString::fromLocal8Bit(part);
+            if (dir.isEmpty() || !QFileInfo(dir).isAbsolute())
+                continue;
+            roots << QFileInfo(dir).absoluteFilePath();
+            ++absoluteDirs;
         }
     }
+    if (absoluteDirs == 0)
+        roots << QStringLiteral("/usr/local/share") << QStringLiteral("/usr/share");
 
-    for (const QString &root : roots) {
+    QStringList ordered;
+    for (const QString &root : roots)
+        if (!ordered.contains(root))
+            ordered << root;
+
+    for (const QString &root : ordered) {
         const QString candidate = QDir(root).absoluteFilePath(
             QStringLiteral("applications/%1").arg(id));
         if (QFileInfo::exists(candidate))

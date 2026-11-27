@@ -128,14 +128,21 @@ devem permanecer os atuais.
   `Registered applications`); deduplicar por id `.desktop`, preservar a ordem;
   cada entrada mostra o nome legível do `.desktop` quando disponível.
 - Resolução do ID: as consultas devolvem um id `.desktop`; resolve-lo para o
-  **caminho absoluto** do arquivo instalado nos diretórios padrão
-  (`~/.local/share/applications`, `/usr/local/share/applications`,
-  `/usr/share/applications`, `XDG_DATA_DIRS`). O caminho é passado ao
+  **caminho absoluto** do arquivo instalado, com precedência XDG: primeiro
+  `XDG_DATA_HOME/applications` (ou `~/.local/share/applications` se a variável
+  não estiver definida), depois `XDG_DATA_DIRS/applications` separado por `:`
+  (ou `/usr/local/share/applications` e `/usr/share/applications` se não estiver
+  definido). Raízes repetidas são ignoradas, preservando a ordem; o primeiro
+  arquivo encontrado vence. Valores relativos em `XDG_DATA_HOME`/`XDG_DATA_DIRS`
+  são ignorados, caindo no default correspondente. Um id com subdiretório, como `sub/app.desktop`, é
+  resolvido diretamente em `<raiz>/applications/sub/app.desktop`, sem varredura
+  recursiva — `app.desktop` não casa com esse arquivo. O caminho é passado ao
   `gio launch <desktop-abs> <caminho>` como primeiro argumento, com o arquivo
   logo depois como argumento separado (sem shell).
 - Falhas de lançamento são capturadas e informadas via `statusMessage`.
   `Escolher executável…` usa `QFileDialog` e inicia o binário com o caminho como
-  argumento, sem shell.
+  argumento, sem shell, em processo independente da aba (fechar a aba não encerra
+  o aplicativo).
 - Cancelamento do diálogo não inicia nada. Sem associações, o submenu ainda
   oferece `Escolher executável…`.
 - Aceite usa um `.desktop` temporário real, apontado pela resolução de id, para
