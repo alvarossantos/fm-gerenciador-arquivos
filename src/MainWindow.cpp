@@ -194,8 +194,10 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
             [choosePreset] { choosePreset(UiPreset::Balanced); });
     connect(m_presetAdvancedAct, &QAction::triggered, this,
             [choosePreset] { choosePreset(UiPreset::Advanced); });
-    connect(m_restoreDefaultsAct, &QAction::triggered, this,
-            [choosePreset] { choosePreset(UiPreset::Balanced); });
+    connect(m_restoreDefaultsAct, &QAction::triggered, this, [this, choosePreset] {
+        choosePreset(UiPreset::Balanced);
+        statusBar()->showMessage(tr("Padrões restaurados"));
+    });
 
     m_ui = loadUiPreferences(s);
     addTab(startPath);

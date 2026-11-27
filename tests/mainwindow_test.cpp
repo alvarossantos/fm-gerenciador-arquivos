@@ -11,6 +11,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QScopeGuard>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
@@ -146,6 +147,12 @@ int visibleBreadcrumbButtons(QWidget *window)
     return count;
 }
 
+bool samePreferences(const UiPreferences &a, const UiPreferences &b)
+{
+    return a.preset == b.preset && a.density == b.density && a.iconSize == b.iconSize
+           && a.columns == b.columns && a.preview == b.preview;
+}
+
 } // namespace
 
 class MainWindowTest : public QObject
@@ -173,6 +180,7 @@ private slots:
     void narrowWindowKeepsActionsAndAncestors();
     void breadcrumbLimitPerPreset();
     void switchPresetResetsManualAdjustments();
+    void restoreDefaultsPersistsAfterRestart();
 };
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
@@ -1030,6 +1038,52 @@ void MainWindowTest::switchPresetResetsManualAdjustments()
     QVERIFY(prefs.preview);
     for (int i = 0; i < tabs->count(); ++i)
         QCOMPARE(static_cast<FileTab *>(tabs->widget(i))->zoom(), 100);
+}
+
+void MainWindowTest::restoreDefaultsPersistsAfterRestart()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    {
+        MainWindow w(home);
+        w.show();
+        QApplication::processEvents();
+        auto *tabs = w.findChild<QTabWidget *>();
+        QVERIFY(tabs);
+        QVERIFY(choosePreset(&w, QStringLiteral("Avançada")));
+        UiPreferences manual = w.uiPreferences();
+        manual.density = 0;
+        manual.iconSize = 32;
+        w.applyUiPreferences(manual);
+        findAction(&w, QStringLiteral("Aumentar zoom"))->trigger();
+        QCOMPARE(static_cast<FileTab *>(tabs->widget(0))->zoom(), 125);
+
+        auto *interfaceMenu = w.findChild<QMenu *>(QStringLiteral("interfaceMenu"));
+        QVERIFY(interfaceMenu);
+        QAction *restore = menuAction(interfaceMenu, QStringLiteral("Restaurar padrões"));
+        QVERIFY(restore);
+        QVERIFY(!restore->isCheckable());
+        restore->trigger();
+
+        QVERIFY2(samePreferences(w.uiPreferences(), defaultUiPreferences(UiPreset::Balanced)),
+                 "Restaurar padrões não voltou à Equilibrada");
+        for (int i = 0; i < tabs->count(); ++i)
+            QCOMPARE(static_cast<FileTab *>(tabs->widget(i))->zoom(), 100);
+        auto *status = w.findChild<QStatusBar *>();
+        QVERIFY(status);
+        QCOMPARE(status->currentMessage(), QStringLiteral("Padrões restaurados"));
+        w.close();
+    }
+
+    MainWindow restarted(home);
+    QVERIFY2(samePreferences(restarted.uiPreferences(), defaultUiPreferences(UiPreset::Balanced)),
+             "preferências não sobreviveram ao reinício");
+    QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
+    QCOMPARE(settings.value(QStringLiteral("ui/preset")).toString(), QStringLiteral("balanced"));
 }
 
 QTEST_MAIN(MainWindowTest)
