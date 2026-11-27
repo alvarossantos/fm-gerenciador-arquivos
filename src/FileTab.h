@@ -64,11 +64,12 @@ private:
     void updatePreview();
     void updatePlacesSelection();
 
-    void copyToClipboard(bool cut);
+    void copyToClipboard(bool cut, const QStringList &paths);
     void paste();
-    void trashSelected();
-    void deleteSelected();
-    void renameCurrent();
+    void copyPathsToClipboard(const QStringList &paths);
+    void trashSelected(const QStringList &paths);
+    void deleteSelected(const QStringList &paths);
+    void renameCurrent(const QString &path);
     void showProperties(const QString &path);
 
     void newFolder();

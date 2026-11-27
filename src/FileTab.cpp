@@ -302,12 +302,12 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
         auto *s = new QShortcut(ks, this, fn);
         s->setContext(Qt::WidgetWithChildrenShortcut);
     };
-    sc(QKeySequence::Copy, [this] { copyToClipboard(false); });
-    sc(QKeySequence::Cut, [this] { copyToClipboard(true); });
+    sc(QKeySequence::Copy, [this] { copyToClipboard(false, selectedPaths()); });
+    sc(QKeySequence::Cut, [this] { copyToClipboard(true, selectedPaths()); });
     sc(QKeySequence::Paste, [this] { paste(); });
-    sc(QKeySequence(Qt::Key_Delete), [this] { trashSelected(); });
-    sc(QKeySequence(Qt::SHIFT | Qt::Key_Delete), [this] { deleteSelected(); });
-    sc(QKeySequence(Qt::Key_F2), [this] { renameCurrent(); });
+    sc(QKeySequence(Qt::Key_Delete), [this] { trashSelected(selectedPaths()); });
+    sc(QKeySequence(Qt::SHIFT | Qt::Key_Delete), [this] { deleteSelected(selectedPaths()); });
+    sc(QKeySequence(Qt::Key_F2), [this] { renameCurrent(selectedPaths().value(0)); });
 
     goTo(startPath);
 }
@@ -562,6 +562,7 @@ void FileTab::showContextMenu(const QPoint &pos)
         menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
         if (oneDir)
             menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
+        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
         menu.addSeparator();
     }
 
@@ -593,8 +594,10 @@ void FileTab::showContextMenu(const QPoint &pos)
     menu.addSeparator();
 
     if (!sel.isEmpty()) {
-        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this] { copyToClipboard(false); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this] { copyToClipboard(true); });
+        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        if (sel.size() > 1)
+            menu.addAction(tr("Copiar caminhos"), this, [this, sel] { copyPathsToClipboard(sel); });
     }
     QAction *pasteAct = menu.addAction(QIcon::fromTheme("edit-paste"), tr("Colar"), this, [this] { paste(); });
     const QMimeData *md = QGuiApplication::clipboard()->mimeData();
@@ -603,9 +606,9 @@ void FileTab::showContextMenu(const QPoint &pos)
     if (!sel.isEmpty()) {
         menu.addSeparator();
         if (one)
-            menu.addAction(tr("Renomear"), this, [this] { renameCurrent(); });
-        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this] { trashSelected(); });
-        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this] { deleteSelected(); });
+            menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
+        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
         menu.addSeparator();
         menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
         if (one && !archiveSuffix(first).isEmpty()) {
@@ -625,16 +628,15 @@ void FileTab::showContextMenu(const QPoint &pos)
 
 // ---------- operações de arquivo ----------
 
-void FileTab::copyToClipboard(bool cut)
+void FileTab::copyToClipboard(bool cut, const QStringList &paths)
 {
-    const QStringList sel = selectedPaths();
-    if (sel.isEmpty())
+    if (paths.isEmpty())
         return;
 
     auto *md = new QMimeData;
     QList<QUrl> urls;
     QByteArray gnome = cut ? "cut" : "copy";
-    for (const QString &p : sel) {
+    for (const QString &p : paths) {
         const QUrl u = QUrl::fromLocalFile(p);
         urls << u;
         gnome += '\n' + u.toEncoded();
@@ -643,8 +645,18 @@ void FileTab::copyToClipboard(bool cut)
     md->setData(QStringLiteral("application/x-kde-cutselection"), cut ? "1" : "0");
     md->setData(QStringLiteral("x-special/gnome-copied-files"), gnome);
     QGuiApplication::clipboard()->setMimeData(md);
-    emit statusMessage(cut ? tr("%1 item(ns) recortado(s)").arg(sel.size())
-                           : tr("%1 item(ns) copiado(s)").arg(sel.size()));
+    emit statusMessage(cut ? tr("%1 item(ns) recortado(s)").arg(paths.size())
+                           : tr("%1 item(ns) copiado(s)").arg(paths.size()));
+}
+
+void FileTab::copyPathsToClipboard(const QStringList &paths)
+{
+    if (paths.isEmpty())
+        return;
+
+    auto *md = new QMimeData;
+    md->setText(paths.join(QLatin1Char('\n')));
+    QGuiApplication::clipboard()->setMimeData(md);
 }
 
 void FileTab::paste()
@@ -692,38 +704,41 @@ void FileTab::paste()
                             : tr("%1 item(ns) colado(s)").arg(ok));
 }
 
-void FileTab::trashSelected()
+void FileTab::trashSelected(const QStringList &paths)
 {
-    const QStringList sel = selectedPaths();
     int ok = 0, fail = 0;
-    for (const QString &p : sel)
+    for (const QString &p : paths)
         QFile::moveToTrash(p) ? ++ok : ++fail;
-    if (!sel.isEmpty())
+    if (!paths.isEmpty())
         emit statusMessage(fail ? tr("%1 na lixeira, %2 falha(s)").arg(ok).arg(fail)
                                 : tr("%1 item(ns) movido(s) para a lixeira").arg(ok));
 }
 
-void FileTab::deleteSelected()
+void FileTab::deleteSelected(const QStringList &paths)
 {
-    const QStringList sel = selectedPaths();
-    if (sel.isEmpty())
+    if (paths.isEmpty())
         return;
     const auto r = QMessageBox::warning(
         this, tr("Excluir permanentemente"),
-        tr("Excluir %1 item(ns) permanentemente? Essa ação não pode ser desfeita.").arg(sel.size()),
+        tr("Excluir %1 item(ns) permanentemente? Essa ação não pode ser desfeita.").arg(paths.size()),
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
     if (r != QMessageBox::Yes)
         return;
     int fail = 0;
-    for (const QString &p : sel)
+    for (const QString &p : paths)
         if (!removePath(p))
             ++fail;
     emit statusMessage(fail ? tr("%1 item(ns) não puderam ser excluídos").arg(fail) : tr("Excluído"));
 }
 
-void FileTab::renameCurrent()
+void FileTab::renameCurrent(const QString &path)
 {
-    const QModelIndex idx = currentView()->currentIndex();
+    if (path.isEmpty())
+        return;
+    const QModelIndex src = m_model->index(path);
+    if (!src.isValid())
+        return;
+    const QModelIndex idx = m_proxy->mapFromSource(src);
     if (idx.isValid())
         currentView()->edit(idx.siblingAtColumn(0));
 }

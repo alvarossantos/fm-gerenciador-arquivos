@@ -203,6 +203,8 @@ private slots:
     void contextMenuTargetOnIcons();
     void contextMenuPreservesMultiSelection();
     void contextMenuOutsideSelectionReplacesTarget();
+    void menuActionsUseFrozenTarget();
+    void copyPathActionsWriteTextToClipboard();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
     void extractionSuccessPublishesFolder();
@@ -446,6 +448,97 @@ void FileTabTest::contextMenuOutsideSelectionReplacesTarget()
     view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     QCOMPARE(captureContextTargets(tab, view, gamma), QStringList{QDir(root).filePath("gamma.txt")});
+}
+
+void FileTabTest::menuActionsUseFrozenTarget()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    for (const QString &name : { QStringLiteral("origem.txt"), QStringLiteral("outro.txt") }) {
+        QFile f(QDir(root).filePath(name));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(name.toUtf8());
+    }
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) > 0, 3000);
+
+    const QModelIndex origin = findRowNamed(view, QStringLiteral("origem.txt"));
+    QVERIFY(origin.isValid());
+    auto selectRow = [view](const QString &name) {
+        const QModelIndex i = findRowNamed(view, name);
+        if (!i.isValid())
+            return false;
+        view->selectionModel()->select(i, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        view->setCurrentIndex(i);
+        return true;
+    };
+    QVERIFY(selectRow(QStringLiteral("origem.txt")));
+    QGuiApplication::clipboard()->clear();
+
+    runMenuAction(QStringList{ QStringLiteral("Copiar") },
+                  [=] { selectRow(QStringLiteral("outro.txt")); });
+    openContextMenu(view, origin);
+
+    // Confirma primeiro que a seleção visual mudou enquanto o menu estava aberto.
+    const QModelIndex current = view->selectionModel()->currentIndex();
+    QVERIFY(current.isValid());
+    QCOMPARE(current.data().toString(), QStringLiteral("outro.txt"));
+
+    const QMimeData *clip = QGuiApplication::clipboard()->mimeData();
+    QVERIFY(clip && clip->hasUrls());
+    const QList<QUrl> urls = clip->urls();
+    QCOMPARE(urls.size(), 1);
+    QCOMPARE(urls.first().toLocalFile(), QDir(root).filePath(QStringLiteral("origem.txt")));
+}
+
+void FileTabTest::copyPathActionsWriteTextToClipboard()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) > 0, 3000);
+
+    const QModelIndex alpha = findRowNamed(view, QStringLiteral("alpha.txt"));
+    const QModelIndex beta = findRowNamed(view, QStringLiteral("beta.txt"));
+    QVERIFY(alpha.isValid());
+    QVERIFY(beta.isValid());
+
+    view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->setCurrentIndex(alpha);
+    QGuiApplication::clipboard()->clear();
+    runMenuAction(QStringList{ QStringLiteral("Copiar caminho") });
+    openContextMenu(view, alpha);
+    const QMimeData *one = QGuiApplication::clipboard()->mimeData();
+    QVERIFY(one && one->hasText());
+    QCOMPARE(one->text(), QDir(root).filePath(QStringLiteral("alpha.txt")));
+
+    // O modelo ordena as linhas; refaz a busca para não usar índices obsoletos.
+    const QModelIndex alphaNow = findRowNamed(view, QStringLiteral("alpha.txt"));
+    const QModelIndex betaNow = findRowNamed(view, QStringLiteral("beta.txt"));
+    QVERIFY(alphaNow.isValid());
+    QVERIFY(betaNow.isValid());
+    view->selectionModel()->select(alphaNow, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->selectionModel()->select(betaNow, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    QGuiApplication::clipboard()->clear();
+    runMenuAction(QStringList{ QStringLiteral("Copiar caminhos") });
+    openContextMenu(view, betaNow);
+    const QMimeData *many = QGuiApplication::clipboard()->mimeData();
+    QVERIFY(many && many->hasText());
+    const QString expectedPaths = QDir(root).filePath(QStringLiteral("alpha.txt")) + QLatin1Char('\n')
+                                + QDir(root).filePath(QStringLiteral("beta.txt"));
+    QCOMPARE(many->text(), expectedPaths);
 }
 
 void FileTabTest::extractionFailureDoesNotPublishFolder()
