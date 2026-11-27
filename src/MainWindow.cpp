@@ -2,11 +2,16 @@
 #include "FileTab.h"
 
 #include <QAction>
+#include <QApplication>
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFontMetrics>
+#include <QHBoxLayout>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPaintEvent>
+#include <QResizeEvent>
 #include <QSettings>
 #include <QStatusBar>
 #include <QStyle>
@@ -14,6 +19,17 @@
 #include <QTabWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
+#include <QVector>
+
+namespace {
+
+QString elideMiddle(const QString &text, int maxWidth)
+{
+    return QFontMetrics(QApplication::font()).elidedText(text, Qt::ElideMiddle, maxWidth);
+}
+
+} // namespace
 
 MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(parent)
 {
@@ -43,8 +59,25 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_forward->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
     m_up->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
 
+    m_pathBar = new QWidget;
+    m_pathLayout = new QHBoxLayout(m_pathBar);
+    m_pathLayout->setContentsMargins(4, 0, 4, 0);
+    m_pathLayout->setSpacing(2);
+    m_pathBar->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_pathBar->setMinimumWidth(80);
+    tb->addWidget(m_pathBar);
+
+    m_overflow = new QToolButton(m_pathBar);
+    m_overflow->setObjectName(QStringLiteral("breadcrumbOverflow"));
+    m_overflow->setText(QStringLiteral("…"));
+    m_overflow->setToolTip(tr("Ancestrais ocultos"));
+    m_overflow->setPopupMode(QToolButton::InstantPopup);
+    m_overflow->setMenu(new QMenu(m_overflow));
+    m_overflow->hide();
+
     m_pathEdit = new QLineEdit;
     m_pathEdit->setClearButtonEnabled(true);
+    m_pathEdit->hide();
     tb->addWidget(m_pathEdit);
 
     m_iconsAct = tb->addAction(QIcon::fromTheme("view-list-icons"), tr("Visão em ícones"));
@@ -65,7 +98,12 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     auto *focusPath = new QAction(this);
     focusPath->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
     addAction(focusPath);
-    connect(focusPath, &QAction::triggered, this, [this] { m_pathEdit->setFocus(); m_pathEdit->selectAll(); });
+    connect(focusPath, &QAction::triggered, this, [this] {
+        m_pathBar->hide();
+        m_pathEdit->show();
+        m_pathEdit->setFocus();
+        m_pathEdit->selectAll();
+    });
 
     auto *closeTabAct = new QAction(this);
     closeTabAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
@@ -98,7 +136,10 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
         }
     });
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
-    connect(m_tabs, &QTabWidget::currentChanged, this, [this] { syncToolbar(); });
+    connect(m_tabs, &QTabWidget::currentChanged, this, [this] {
+        rebuildBreadcrumb();
+        syncToolbar();
+    });
 
     // "Nova aba" abre na pasta da aba atual
     connect(newTab, &QAction::triggered, this, [this] {
@@ -134,6 +175,7 @@ FileTab *MainWindow::addTab(const QString &path)
         if (tab == currentTab()) {
             m_pathEdit->setText(p);
             setWindowTitle(QStringLiteral("%1 — fm").arg(p));
+            rebuildBreadcrumb();
             syncToolbar();
         }
     });
@@ -144,6 +186,7 @@ FileTab *MainWindow::addTab(const QString &path)
     connect(tab, &FileTab::openInNewTab, this, [this](const QString &p) { addTab(p); });
 
     syncToolbar();
+    rebuildBreadcrumb();
     return tab;
 }
 
@@ -169,6 +212,117 @@ void MainWindow::syncToolbar()
     m_forward->setEnabled(t->canGoForward());
     m_pathEdit->setText(t->currentPath());
     setWindowTitle(QStringLiteral("%1 — fm").arg(t->currentPath()));
+}
+
+void MainWindow::navigateBreadcrumb(const QString &path)
+{
+    if (auto *t = currentTab())
+        t->goTo(path);
+}
+
+void MainWindow::rebuildBreadcrumb()
+{
+    while (QLayoutItem *item = m_pathLayout->takeAt(0)) {
+        if (QWidget *w = item->widget()) {
+            if (w != m_overflow) {
+                w->hide();
+                delete w;
+            }
+        }
+        delete item;
+    }
+    m_overflow->menu()->clear();
+    m_overflow->hide();
+
+    const FileTab *tab = currentTab();
+    if (!tab)
+        return;
+
+    struct Segment { QString path; QString label; };
+    QVector<Segment> segments{{QStringLiteral("/"), QStringLiteral("/")}};
+    QString acc;
+    for (const QString &part : QDir::cleanPath(tab->currentPath()).split(QLatin1Char('/'), Qt::SkipEmptyParts)) {
+        acc += QLatin1Char('/') + part;
+        segments.append({acc, part});
+    }
+
+    QVector<QToolButton *> buttons;
+    buttons.reserve(segments.size());
+    for (const Segment &s : segments) {
+        auto *b = new QToolButton(m_pathBar);
+        b->setObjectName(QStringLiteral("breadcrumbButton"));
+        b->setProperty("path", s.path);
+        b->setToolTip(s.path);
+        b->setText(elideMiddle(s.label, 90));
+        b->setAutoRaise(true);
+        b->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        connect(b, &QToolButton::clicked, this,
+                [this, b] { navigateBreadcrumb(b->property("path").toString()); });
+        m_pathLayout->addWidget(b);
+        buttons.append(b);
+    }
+
+    QVector<bool> visible(buttons.size(), true);
+    auto applyVisibility = [&] {
+        for (int i = 0; i < buttons.size(); ++i)
+            buttons[i]->setVisible(visible[i]);
+    };
+    const int margins = m_pathLayout->contentsMargins().left() + m_pathLayout->contentsMargins().right();
+    const int available = m_pathBar->width() - margins;
+    const int spacing = m_pathLayout->spacing();
+    auto usedWidth = [&] {
+        int w = 0;
+        int count = 0;
+        for (int i = 0; i < buttons.size(); ++i)
+            if (visible[i]) {
+                w += buttons[i]->sizeHint().width();
+                ++count;
+            }
+        if (m_overflow->isVisible())
+            w += m_overflow->sizeHint().width();
+        if (count > 0)
+            w += spacing * (count - 1);
+        return w;
+    };
+
+    QVector<int> candidates;
+    for (int i = 1; i < buttons.size() - 1; ++i)
+        candidates.append(i);
+    candidates.append(0); // raiz entra no menu por último
+    applyVisibility();
+    for (int i : candidates) {
+        if (usedWidth() <= available)
+            break;
+        int shown = 0;
+        for (bool v : visible)
+            if (v)
+                ++shown;
+        if (shown <= 1)
+            break;
+        visible[i] = false;
+        applyVisibility();
+    }
+
+    bool anyHidden = false;
+    for (int i = 0; i < buttons.size(); ++i) {
+        if (visible[i])
+            continue;
+        anyHidden = true;
+        const QString p = buttons[i]->property("path").toString();
+        QAction *a = m_overflow->menu()->addAction(elideMiddle(p, 160));
+        a->setData(p);
+        connect(a, &QAction::triggered, this, [this, p] { navigateBreadcrumb(p); });
+    }
+    m_overflow->setVisible(anyHidden);
+    if (anyHidden)
+        m_pathLayout->addWidget(m_overflow);
+    m_pathLayout->addStretch(1);
+}
+
+void MainWindow::resizeEvent(QResizeEvent *e)
+{
+    QMainWindow::resizeEvent(e);
+    rebuildBreadcrumb();
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)
