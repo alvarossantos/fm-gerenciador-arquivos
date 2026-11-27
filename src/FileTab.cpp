@@ -356,17 +356,8 @@ void FileTab::updatePlacesSelection()
         m_places->setCurrentItem(best);
         return;
     }
-    for (int i = 0; i < m_places->count(); ++i) {
-        QListWidgetItem *it = m_places->item(i);
-        if (it->data(Qt::UserRole).toString() == QDir::homePath()) {
-            m_places->setCurrentItem(it);
-            return;
-        }
-    }
-    if (m_places->count() > 0 && m_places->item(0)->data(Qt::UserRole).toString() != QStringLiteral("/"))
-        m_places->setCurrentItem(m_places->item(0));
-    else
-        m_places->clearSelection();
+    m_places->setCurrentItem(nullptr);
+    m_places->clearSelection();
 }
 
 bool FileTab::goTo(const QString &path, bool addHistory)

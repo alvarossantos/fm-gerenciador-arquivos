@@ -290,12 +290,14 @@ void MainWindow::rebuildBreadcrumb()
     }
 
     QVector<bool> visible(buttons.size(), true);
+    bool overflowNeeded = false;
     auto applyVisibility = [&] {
         for (int i = 0; i < buttons.size(); ++i)
             buttons[i]->setVisible(visible[i]);
     };
     const int margins = m_pathLayout->contentsMargins().left() + m_pathLayout->contentsMargins().right();
-    const int available = m_pathBar->width() - margins;
+    constexpr int slack = 2; // arredondamento do layout entre resizeEvent e o geométrico final
+    const int available = m_pathBar->width() - margins - slack;
     const int spacing = m_pathLayout->spacing();
     auto usedWidth = [&] {
         int w = 0;
@@ -305,8 +307,10 @@ void MainWindow::rebuildBreadcrumb()
                 w += buttons[i]->sizeHint().width();
                 ++count;
             }
-        if (m_overflow->isVisible())
+        if (overflowNeeded) {
             w += m_overflow->sizeHint().width();
+            ++count;
+        }
         if (count > 0)
             w += spacing * (count - 1);
         return w;
@@ -327,21 +331,20 @@ void MainWindow::rebuildBreadcrumb()
         if (shown <= 1)
             break;
         visible[i] = false;
+        overflowNeeded = true;
         applyVisibility();
     }
 
-    bool anyHidden = false;
     for (int i = 0; i < buttons.size(); ++i) {
         if (visible[i])
             continue;
-        anyHidden = true;
         const QString p = buttons[i]->property("path").toString();
         QAction *a = m_overflow->menu()->addAction(elideMiddle(p, 160));
         a->setData(p);
         connect(a, &QAction::triggered, this, [this, p] { navigateBreadcrumb(p); });
     }
-    m_overflow->setVisible(anyHidden);
-    if (anyHidden)
+    m_overflow->setVisible(overflowNeeded);
+    if (overflowNeeded)
         m_pathLayout->addWidget(m_overflow);
     m_pathLayout->addStretch(1);
 }

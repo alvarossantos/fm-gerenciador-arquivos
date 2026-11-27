@@ -3,6 +3,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QDir>
+#include <QHBoxLayout>
 #include <QListWidget>
 #include <QKeySequence>
 #include <QLineEdit>
@@ -25,6 +26,12 @@ QString selectedPlacePath(QWidget *tab)
     return places && places->currentItem()
                ? places->currentItem()->data(Qt::UserRole).toString()
                : QString();
+}
+
+bool hasSelectedPlace(QWidget *tab)
+{
+    auto *places = tab->findChild<QListWidget *>(QStringLiteral("places"));
+    return places && places->currentItem() != nullptr;
 }
 
 QList<QToolButton *> breadcrumbButtons(QWidget *window)
@@ -56,9 +63,11 @@ private slots:
     void placesHighlightFollowsGoToBackForward();
     void placesHighlightUsesAncestorRules();
     void placesHighlightRejectsPrefixCollision();
+    void placesHighlightClearsOutsideRegisteredPlaces();
     void breadcrumbFollowsActiveTab();
     void breadcrumbClickThenBackUsesActiveTabHistory();
     void overflowMenuKeepsCurrentAndNavigates();
+    void overflowAndCurrentButtonFitInsideBar();
     void pathEditKeepsInvalidTextAndEscRestores();
     void tabChangeDiscardsPendingEdit();
 };
@@ -142,8 +151,29 @@ void MainWindowTest::placesHighlightRejectsPrefixCollision()
     FileTab tab(home);
     tab.goTo(documents2);
     QCOMPARE(tab.currentPath(), documents2);
-    QCOMPARE(selectedPlacePath(&tab), home);
+    QVERIFY(!hasSelectedPlace(&tab));
     QVERIFY(selectedPlacePath(&tab) != documents);
+}
+
+void MainWindowTest::placesHighlightClearsOutsideRegisteredPlaces()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    const QString documents = QDir(root.path()).filePath(QStringLiteral("Documentos"));
+    QVERIFY(QDir().mkpath(home));
+    QVERIFY(QDir().mkpath(documents));
+    QVERIFY(QDir(QStringLiteral("/etc")).exists());
+    setPlacesForTests({home, documents});
+    QScopeGuard restore([] { setPlacesForTests({}); });
+
+    FileTab tab(home);
+    QVERIFY(hasSelectedPlace(&tab));
+
+    tab.goTo(QStringLiteral("/etc"));
+    QCOMPARE(tab.currentPath(), QStringLiteral("/etc"));
+    QVERIFY(!hasSelectedPlace(&tab));
+    QVERIFY(tab.canGoBack());
 }
 
 void MainWindowTest::breadcrumbFollowsActiveTab()
@@ -293,6 +323,73 @@ void MainWindowTest::overflowMenuKeepsCurrentAndNavigates()
 
     for (QToolButton *b : breadcrumbButtons(&w))
         QVERIFY(!b->property("path").toString().isEmpty());
+}
+
+void MainWindowTest::overflowAndCurrentButtonFitInsideBar()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    const QString documents = QDir(root.path()).filePath(QStringLiteral("Documentos"));
+    QVERIFY(QDir().mkpath(home));
+    QVERIFY(QDir().mkpath(documents));
+    setPlacesForTests({home, documents});
+    QScopeGuard restore([] { setPlacesForTests({}); });
+
+    MainWindow w(documents);
+    w.show();
+    QApplication::processEvents();
+
+    const QString deep = documents + QStringLiteral("/a/b/c/d/e/f/g/h");
+    QVERIFY(QDir().mkpath(deep));
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    static_cast<FileTab *>(tabs->widget(0))->goTo(deep);
+    QApplication::processEvents();
+
+    auto *overflow = w.findChild<QToolButton *>(QStringLiteral("breadcrumbOverflow"));
+    QVERIFY(overflow);
+    QWidget *bar = overflow->parentWidget();
+    QVERIFY(bar);
+
+    for (int width : {430, 420, 410, 400, 398, 396, 394, 392, 390, 388, 386, 384, 382, 380, 370}) {
+        w.resize(width, 600);
+        QApplication::processEvents();
+        QVERIFY(overflow->isVisible());
+        auto *layout = qobject_cast<QHBoxLayout *>(bar->layout());
+        QVERIFY(layout);
+        int used = 0;
+        int items = 0;
+        for (QToolButton *b : breadcrumbButtons(&w)) {
+            if (!b->isVisible())
+                continue;
+            used += b->sizeHint().width();
+            ++items;
+        }
+        used += overflow->sizeHint().width();
+        ++items;
+        used += layout->spacing() * (items - 1);
+        const int margins = layout->contentsMargins().left() + layout->contentsMargins().right();
+        constexpr int layoutCompression = 4; // o layout comprime o último QToolButton em até 4 px
+        QVERIFY2(used <= bar->width() - margins + layoutCompression,
+                 qPrintable("largura " + QString::number(width) + ": breadcrumb excede a barra: "
+                            + QString::number(used) + " > "
+                            + QString::number(bar->width() - margins + layoutCompression)));
+
+        QToolButton *current = nullptr;
+        for (QToolButton *b : breadcrumbButtons(&w))
+            if (b->property("path").toString() == deep)
+                current = b;
+        QVERIFY(current);
+        QVERIFY(current->isVisible());
+
+        for (QToolButton *b : {overflow, current}) {
+            QVERIFY2(b->geometry().left() >= 0,
+                     qPrintable("largura " + QString::number(width) + ": botão começa fora da barra: " + b->text()));
+            QVERIFY2(b->geometry().right() <= bar->width(),
+                     qPrintable("largura " + QString::number(width) + ": botão termina fora da barra: " + b->text()));
+        }
+    }
 }
 
 void MainWindowTest::pathEditKeepsInvalidTextAndEscRestores()
