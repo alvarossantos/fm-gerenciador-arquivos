@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QScopeGuard>
@@ -179,6 +180,7 @@ private slots:
     void extractHereCancelRemovesTemporaryFolder();
     void extractHereKeepsBackupWhenRestoreFails();
     void closingTabStopsExtractionBeforeCleanup();
+    void closingTabKeepsScratchWhenProcessDoesNotStop();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -705,6 +707,44 @@ void FileTabTest::closingTabStopsExtractionBeforeCleanup()
     delete tab;
     QVERIFY2(elapsed.elapsed() < 2500, "fechar a aba deve interromper o processo, não esperar 3 s");
     QTRY_VERIFY_WITH_TIMEOUT(scratchDirs(root).isEmpty(), 3000);
+}
+
+void FileTabTest::closingTabKeepsScratchWhenProcessDoesNotStop()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    const QString archive = QDir(root).filePath(QStringLiteral("arquivo.zip"));
+    { QFile f(archive); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("fake"); }
+
+    const QString bin = QDir(dir.path()).filePath(QStringLiteral("bin"));
+    installFakeBsdtar(bin, QStringLiteral("slow"));
+    const QByteArray oldPath = qgetenv("PATH");
+    qputenv("PATH", bin.toUtf8() + QByteArray(":") + oldPath);
+    QScopeGuard restorePath([oldPath] { qputenv("PATH", oldPath); });
+
+    bool hookCalled = false;
+    bool hookSawRunning = false;
+    setWaitForProcessHookForTests([&](QProcess *proc, int msecs) -> bool {
+        hookCalled = true;
+        hookSawRunning = msecs == 2000 && proc->state() != QProcess::NotRunning;
+        return false;
+    });
+    QScopeGuard clearHook([] { setWaitForProcessHookForTests({}); });
+
+    auto *tab = new FileTab(root);
+    tab->show();
+    QVERIFY(QTest::qWaitForWindowExposed(tab));
+    auto *view = tab->findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("arquivo.zip")).isValid(), 3000);
+    triggerOnRow(view, findRowNamed(view, QStringLiteral("arquivo.zip")), QStringLiteral("Extrair aqui"));
+    QTRY_VERIFY_WITH_TIMEOUT(!scratchDirs(root).isEmpty(), 3000);
+    delete tab;
+    QVERIFY(hookCalled);
+    QVERIFY(hookSawRunning);
+    QVERIFY2(!scratchDirs(root).isEmpty(), "processo ativo: o temporário não pode ser removido");
 }
 
 QTEST_MAIN(FileTabTest)

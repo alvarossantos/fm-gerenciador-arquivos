@@ -67,7 +67,8 @@ operação, que é justamente o problema relatado.
 - Testes: casos em `filetab_test.cpp` com `bsdtar` falso no `PATH`, cobrindo
   falha, cancelamento, sucesso, rollback de publicação parcial, troca de pasta
   durante a extração, cancelamento em `Extrair aqui`, preservação do backup
-  quando a restauração falha e fechamento da aba com extração em andamento.
+  quando a restauração falha, fechamento da aba com extração em andamento e
+  fechamento com o processo ainda ativo após o timeout.
 
 ## Pendente para o implementador
 
@@ -76,6 +77,8 @@ operação, que é justamente o problema relatado.
 - Diálogo é filho do `FileTab` e o processo é protegido por `QPointer` para
   evitar uso após destruição da aba; a guarda ligada a `destroyed` mata e espera
   o término do `QProcess` antes de remover o scratch (respeitando a preservação
-  do backup).
+  do backup). Se `waitForFinished(2000)` falhar, o scratch é preservado e
+  `finished`/`errorOccurred` também são impedidos de removê-lo; um hook
+  injetável força esse timeout no teste.
 - Registrar no relatório da branch o que foi automatizado e o que exigiria
   validação manual no desktop.

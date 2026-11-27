@@ -107,6 +107,12 @@ QString archiveSuffix(const QString &name)
 }
 
 RestoreBackupHook restoreBackupHook;
+WaitForProcessHook waitForProcessHook;
+
+bool waitForProcess(QProcess *proc, int msecs)
+{
+    return waitForProcessHook ? waitForProcessHook(proc, msecs) : proc->waitForFinished(msecs);
+}
 
 bool restoreBackup(const QString &backup, const QString &dst)
 {
@@ -118,6 +124,11 @@ bool restoreBackup(const QString &backup, const QString &dst)
 void setRestoreBackupHookForTests(RestoreBackupHook hook)
 {
     restoreBackupHook = std::move(hook);
+}
+
+void setWaitForProcessHookForTests(WaitForProcessHook hook)
+{
+    waitForProcessHook = std::move(hook);
 }
 
 FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
@@ -873,11 +884,16 @@ void FileTab::extract(const QString &archive, bool intoFolder)
     const QPointer<QProcess> procGuard = proc;
     auto *lifetimeGuard = new QObject(this);
     connect(this, &QObject::destroyed, lifetimeGuard, [procGuard, scratch, keepScratch] {
-        if (procGuard && procGuard->state() != QProcess::NotRunning) {
+        bool stopped = !procGuard || procGuard->state() == QProcess::NotRunning;
+        if (!stopped) {
             procGuard->kill();
-            procGuard->waitForFinished(2000);
+            stopped = waitForProcess(procGuard.data(), 2000);
         }
-        if (!(keepScratch && *keepScratch))
+        if (!stopped) {
+            // finished/errorOccurred também limpam; impedir que apaguem arquivo em uso.
+            *keepScratch = true;
+        } else if (!(keepScratch && *keepScratch)) {
             QDir(scratch).removeRecursively();
+        }
     });
 }

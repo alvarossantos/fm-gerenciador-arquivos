@@ -19,6 +19,8 @@ class ThumbnailProxy;
 
 using RestoreBackupHook = std::function<bool(const QString &, const QString &)>;
 void setRestoreBackupHookForTests(RestoreBackupHook hook);
+using WaitForProcessHook = std::function<bool(QProcess *, int)>;
+void setWaitForProcessHookForTests(WaitForProcessHook hook);
 
 class FileTab : public QWidget {
     Q_OBJECT
