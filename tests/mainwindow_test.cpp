@@ -12,6 +12,7 @@
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
+#include <QTreeView>
 
 #include "FileTab.h"
 #include "MainWindow.h"
@@ -75,11 +76,14 @@ void MainWindowTest::placesHighlightFollowsGoToBackForward()
     QScopeGuard restore([] { setPlacesForTests({}); });
 
     FileTab tab(home);
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
     QCOMPARE(selectedPlacePath(&tab), home);
 
     tab.goTo(nested);
     QCOMPARE(tab.currentPath(), nested);
     QCOMPARE(selectedPlacePath(&tab), documents);
+    QVERIFY(!tree->selectionModel()->hasSelection());
     QVERIFY(tab.canGoBack());
     QVERIFY(!tab.canGoForward());
 
@@ -92,6 +96,7 @@ void MainWindowTest::placesHighlightFollowsGoToBackForward()
     tab.forward();
     QCOMPARE(tab.currentPath(), nested);
     QCOMPARE(selectedPlacePath(&tab), documents);
+    QVERIFY(!tree->selectionModel()->hasSelection());
     QVERIFY(tab.canGoBack());
     QVERIFY(!tab.canGoForward());
 }
@@ -339,6 +344,15 @@ void MainWindowTest::pathEditKeepsInvalidTextAndEscRestores()
     QApplication::processEvents();
     QVERIFY(edit->isHidden());
     QCOMPARE(lastBreadcrumbPath(&w), project);
+
+    QAction *back = findAction(&w, QStringLiteral("Voltar"));
+    QAction *forward = findAction(&w, QStringLiteral("Avançar"));
+    QVERIFY(back);
+    QVERIFY(forward);
+    back->trigger();
+    QCOMPARE(tab->currentPath(), home);
+    forward->trigger();
+    QCOMPARE(tab->currentPath(), project);
 }
 
 void MainWindowTest::tabChangeDiscardsPendingEdit()
