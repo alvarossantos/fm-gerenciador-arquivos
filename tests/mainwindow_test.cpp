@@ -10,6 +10,7 @@
 #include <QMenu>
 #include <QScopeGuard>
 #include <QStatusBar>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
 #include <QToolButton>
@@ -70,6 +71,8 @@ private slots:
     void overflowAndCurrentButtonFitInsideBar();
     void pathEditKeepsInvalidTextAndEscRestores();
     void tabChangeDiscardsPendingEdit();
+    void tabBarHiddenWithSingleTab();
+    void closingDownToOneTabHidesBarAgain();
 };
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
@@ -494,6 +497,68 @@ void MainWindowTest::tabChangeDiscardsPendingEdit()
     QApplication::processEvents();
     QCOMPARE(tab0->currentPath(), home);
     QCOMPARE(tab1->currentPath(), downloadTest);
+}
+
+void MainWindowTest::tabBarHiddenWithSingleTab()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(QDir().mkpath(root.path()));
+
+    MainWindow w(root.path());
+    w.show();
+    QApplication::processEvents();
+
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *bar = tabs->tabBar();
+    QVERIFY(bar);
+    QCOMPARE(tabs->count(), 1);
+    QVERIFY(!bar->isVisible());
+
+    QAction *newTab = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTab);
+    QVERIFY(newTab->isVisible());
+    newTab->trigger();
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 2);
+    QVERIFY(bar->isVisible());
+}
+
+void MainWindowTest::closingDownToOneTabHidesBarAgain()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(QDir().mkpath(root.path()));
+
+    MainWindow w(root.path());
+    w.show();
+    QApplication::processEvents();
+
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *bar = tabs->tabBar();
+    QVERIFY(bar);
+    QAction *newTab = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTab);
+    newTab->trigger();
+    newTab->trigger();
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 3);
+    QVERIFY(bar->isVisible());
+
+    tabs->setCurrentIndex(2);
+    tabs->tabBar()->tabCloseRequested(2);
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 2);
+    QVERIFY(bar->isVisible());
+
+    tabs->setCurrentIndex(1);
+    tabs->tabBar()->tabCloseRequested(1);
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 1);
+    QVERIFY(!bar->isVisible());
+    QVERIFY(newTab->isVisible());
 }
 
 QTEST_MAIN(MainWindowTest)

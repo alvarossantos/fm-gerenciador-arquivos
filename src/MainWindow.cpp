@@ -192,6 +192,7 @@ FileTab *MainWindow::addTab(const QString &path)
 
     syncToolbar();
     rebuildBreadcrumb();
+    syncTabBarVisibility();
     return tab;
 }
 
@@ -206,6 +207,12 @@ void MainWindow::closeTab(int index)
     QWidget *w = m_tabs->widget(index);
     m_tabs->removeTab(index);
     w->deleteLater();
+    syncTabBarVisibility();
+}
+
+void MainWindow::syncTabBarVisibility()
+{
+    m_tabs->tabBar()->setVisible(m_tabs->count() > 1);
 }
 
 void MainWindow::syncToolbar()

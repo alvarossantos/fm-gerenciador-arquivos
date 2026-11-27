@@ -28,6 +28,7 @@ private:
     FileTab *currentTab() const;
     FileTab *addTab(const QString &path);
     void closeTab(int index);
+    void syncTabBarVisibility();
     void syncToolbar();
     void navigateBreadcrumb(const QString &path);
     void rebuildBreadcrumb();
