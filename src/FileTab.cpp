@@ -1,12 +1,15 @@
 #include "FileTab.h"
 #include "ThumbnailProxy.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QClipboard>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
 #include <QHBoxLayout>
@@ -23,6 +26,7 @@
 #include <QMimeDatabase>
 #include <QPointer>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QProgressDialog>
 #include <QShortcut>
 #include <QSplitter>
@@ -106,9 +110,71 @@ QString archiveSuffix(const QString &name)
     return QString();
 }
 
+QString desktopAppName(const QString &desktop, const QString &id)
+{
+    QFile f(desktop);
+    if (f.open(QIODevice::ReadOnly)) {
+        bool inEntry = false;
+        while (!f.atEnd()) {
+            const QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.startsWith(QLatin1Char('['))) {
+                inEntry = line.compare(QStringLiteral("[Desktop Entry]"), Qt::CaseInsensitive) == 0;
+                continue;
+            }
+            if (inEntry && line.startsWith(QStringLiteral("Name="), Qt::CaseInsensitive)) {
+                const QString name = line.mid(5).trimmed();
+                if (!name.isEmpty())
+                    return name;
+            }
+        }
+    }
+    return id;
+}
+
+QStringList gioRegisteredApps(const QByteArray &output)
+{
+    QStringList ids;
+    bool registered = false;
+    const QStringList lines = QString::fromUtf8(output).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QStringLiteral("Registered applications:"), Qt::CaseInsensitive)) {
+            registered = true;
+            continue;
+        }
+        if (!registered)
+            continue;
+        if (line.startsWith(QStringLiteral("Recommended applications:"), Qt::CaseInsensitive))
+            break;
+        const QString id = line.section(QLatin1Char('='), 0, 0).trimmed();
+        if (id.endsWith(QStringLiteral(".desktop"), Qt::CaseInsensitive))
+            ids << id;
+    }
+    return ids;
+}
+
 RestoreBackupHook restoreBackupHook;
 WaitForProcessHook waitForProcessHook;
 QStringList placesForTests;
+QString templatesDirForTests;
+ContextMenuHook contextMenuHook;
+QStringList mimeIdsForTests;
+bool mimeQueryForTestsSet = false;
+ExecutableChooserHook executableChooserHook;
+LaunchHook launchHook;
+
+QString terminalProgram()
+{
+    for (const QString &name : { QStringLiteral("x-terminal-emulator"), QStringLiteral("foot"),
+                                 QStringLiteral("kitty"), QStringLiteral("alacritty"),
+                                 QStringLiteral("konsole"), QStringLiteral("gnome-terminal"),
+                                 QStringLiteral("xfce4-terminal") }) {
+        const QString found = QStandardPaths::findExecutable(name);
+        if (!found.isEmpty())
+            return found;
+    }
+    return QString();
+}
 
 bool waitForProcess(QProcess *proc, int msecs)
 {
@@ -135,6 +201,95 @@ void setWaitForProcessHookForTests(WaitForProcessHook hook)
 void setPlacesForTests(const QStringList &paths)
 {
     placesForTests = paths;
+}
+
+void setTemplatesDirForTests(const QString &dir)
+{
+    templatesDirForTests = dir;
+}
+
+void setContextMenuHookForTests(ContextMenuHook hook)
+{
+    contextMenuHook = std::move(hook);
+}
+
+void setMimeQueryForTests(const QStringList &ids)
+{
+    mimeIdsForTests = ids;
+    mimeQueryForTestsSet = true;
+}
+
+void clearMimeQueryForTestsForTests()
+{
+    mimeIdsForTests.clear();
+    mimeQueryForTestsSet = false;
+}
+
+void setExecutableChooserForTests(ExecutableChooserHook hook)
+{
+    executableChooserHook = std::move(hook);
+}
+
+void setLaunchHookForTests(LaunchHook hook)
+{
+    launchHook = std::move(hook);
+}
+
+QString FileTab::desktopFileForId(const QString &id) const
+{
+    if (id.isEmpty())
+        return QString();
+
+    const QFileInfo direct(id);
+    if (direct.isAbsolute() && direct.exists())
+        return direct.absoluteFilePath();
+
+    QStringList roots;
+    const QString home = QString::fromLocal8Bit(qgetenv("XDG_DATA_HOME"));
+    if (!home.isEmpty() && QFileInfo(home).isAbsolute())
+        roots << QFileInfo(home).absoluteFilePath();
+    else
+        roots << QDir::homePath() + QStringLiteral("/.local/share");
+
+    const QByteArray dirs = qgetenv("XDG_DATA_DIRS");
+    int absoluteDirs = 0;
+    if (!dirs.isEmpty()) {
+        for (const QByteArray &part : dirs.split(':')) {
+            const QString dir = QString::fromLocal8Bit(part);
+            if (dir.isEmpty() || !QFileInfo(dir).isAbsolute())
+                continue;
+            roots << QFileInfo(dir).absoluteFilePath();
+            ++absoluteDirs;
+        }
+    }
+    if (absoluteDirs == 0)
+        roots << QStringLiteral("/usr/local/share") << QStringLiteral("/usr/share");
+
+    QStringList ordered;
+    for (const QString &root : roots)
+        if (!ordered.contains(root))
+            ordered << root;
+
+    for (const QString &root : ordered) {
+        const QString apps = QDir(root).absoluteFilePath(QStringLiteral("applications"));
+        const QString candidate = QDir(apps).absoluteFilePath(id);
+        if (QFileInfo::exists(candidate))
+            return QFileInfo(candidate).absoluteFilePath();
+
+        // O GIO codifica o "/" dos ids em subdiretórios como "-".
+        if (id.contains(QLatin1Char('-'))) {
+            QDirIterator it(apps, QStringList{QStringLiteral("*.desktop")},
+                            QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                const QString path = it.next();
+                const QString encoded = QDir(apps).relativeFilePath(path)
+                                            .replace(QLatin1Char('/'), QLatin1Char('-'));
+                if (encoded == id)
+                    return QFileInfo(path).absoluteFilePath();
+            }
+        }
+    }
+    return QString();
 }
 
 FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
@@ -296,12 +451,12 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
         auto *s = new QShortcut(ks, this, fn);
         s->setContext(Qt::WidgetWithChildrenShortcut);
     };
-    sc(QKeySequence::Copy, [this] { copyToClipboard(false); });
-    sc(QKeySequence::Cut, [this] { copyToClipboard(true); });
+    sc(QKeySequence::Copy, [this] { copyToClipboard(false, selectedPaths()); });
+    sc(QKeySequence::Cut, [this] { copyToClipboard(true, selectedPaths()); });
     sc(QKeySequence::Paste, [this] { paste(); });
-    sc(QKeySequence(Qt::Key_Delete), [this] { trashSelected(); });
-    sc(QKeySequence(Qt::SHIFT | Qt::Key_Delete), [this] { deleteSelected(); });
-    sc(QKeySequence(Qt::Key_F2), [this] { renameCurrent(); });
+    sc(QKeySequence(Qt::Key_Delete), [this] { trashSelected(selectedPaths()); });
+    sc(QKeySequence(Qt::SHIFT | Qt::Key_Delete), [this] { deleteSelected(selectedPaths()); });
+    sc(QKeySequence(Qt::Key_F2), [this] { renameCurrent(pathOf(currentView()->currentIndex())); });
 
     goTo(startPath);
 }
@@ -406,6 +561,43 @@ bool FileTab::goTo(const QString &path, bool addHistory)
     return true;
 }
 
+void FileTab::refreshModel()
+{
+    auto *oldModel = m_model;
+    auto *oldProxy = m_proxy;
+    auto *oldTreeSelection = m_tree->selectionModel();
+    auto *oldIconsSelection = m_icons->selectionModel();
+
+    auto *model = new QFileSystemModel(this);
+    model->setReadOnly(false);
+    model->setFilter(oldModel->filter());
+    auto *proxy = new ThumbnailProxy(model, this);
+    model->setRootPath(m_path);
+
+    m_model = model;
+    m_proxy = proxy;
+
+    const QModelIndex rootIndex = m_proxy->mapFromSource(m_model->index(m_path));
+    m_tree->setModel(m_proxy);
+    m_icons->setModel(m_proxy);
+    m_icons->setSelectionModel(m_tree->selectionModel());
+    m_tree->setRootIndex(rootIndex);
+    m_icons->setRootIndex(rootIndex);
+
+    connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+            [this] { onSelectionChanged(); });
+    connect(m_model, &QFileSystemModel::directoryLoaded, this, [this](const QString &dir) {
+        if (dir == m_path && selectedPaths().isEmpty())
+            onSelectionChanged();
+    });
+
+    oldTreeSelection->deleteLater();
+    if (oldIconsSelection != oldTreeSelection)
+        oldIconsSelection->deleteLater();
+    oldProxy->deleteLater();
+    oldModel->deleteLater();
+}
+
 void FileTab::back()
 {
     if (canGoBack())
@@ -464,6 +656,17 @@ void FileTab::setShowHidden(bool show)
     if (show)
         f |= QDir::Hidden;
     m_model->setFilter(f);
+}
+
+void FileTab::setViewActions(QAction *icons, QAction *preview, QAction *hidden,
+                             QAction *zoomIn, QAction *zoomOut, QAction *zoomReset)
+{
+    m_iconsAct = icons;
+    m_previewAct = preview;
+    m_hiddenAct = hidden;
+    m_zoomInAct = zoomIn;
+    m_zoomOutAct = zoomOut;
+    m_zoomResetAct = zoomReset;
 }
 
 // ---------- seleção / pré-visualização ----------
@@ -535,11 +738,12 @@ void FileTab::updatePreview()
 void FileTab::showContextMenu(const QPoint &pos)
 {
     QAbstractItemView *v = currentView();
-    const QPoint vp = v->viewport()->mapFrom(v, pos);
-    const QModelIndex idx = v->indexAt(vp);
+    const QModelIndex idx = v->indexAt(pos);
     if (idx.isValid()) {
-        if (!v->selectionModel()->isSelected(idx))
+        if (!v->selectionModel()->isSelected(idx)) {
+            v->clearSelection();
             v->setCurrentIndex(idx.siblingAtColumn(0));
+        }
     } else {
         v->clearSelection();
     }
@@ -550,30 +754,106 @@ void FileTab::showContextMenu(const QPoint &pos)
     const QString first = sel.value(0);
 
     QMenu menu(this);
+    const auto addPaste = [this, &menu] {
+        QAction *act = menu.addAction(QIcon::fromTheme("edit-paste"), tr("Colar"), this, [this] { paste(); });
+        const QMimeData *md = QGuiApplication::clipboard()->mimeData();
+        act->setEnabled(md && md->hasUrls());
+    };
 
-    if (one) {
-        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
-        if (oneDir)
-            menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
+    if (sel.isEmpty()) {
+        menu.addAction(QIcon::fromTheme("folder-new"), tr("Nova pasta…"), this, [this] { newFolder(); });
+        addNewMenu(&menu);
         menu.addSeparator();
+        addPaste();
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("view-refresh"), tr("Atualizar"), this, [this] { refreshModel(); });
+        QMenu *view = menu.addMenu(tr("Exibir"));
+        addViewMenu(view);
+        menu.addAction(tr("Abrir terminal aqui"), this, [this] { openTerminal(m_path); });
+        menu.addAction(tr("Propriedades da pasta"), this, [this] { showProperties(m_path); });
+    } else if (one && oneDir) {
+        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
+        menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
+        menu.addAction(tr("Abrir terminal nesta pasta"), this, [this, first] { openTerminal(first); });
+        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
+        menu.addSeparator();
+        addNewMenu(&menu);
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        addPaste();
+        menu.addSeparator();
+        menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
+        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        menu.addSeparator();
+        menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
+    } else if (one) {
+        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
+        QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), tr("Abrir com…"));
+        addOpenWithMenu(openWith, first);
+        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
+        menu.addSeparator();
+        addNewMenu(&menu);
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        addPaste();
+        menu.addSeparator();
+        menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
+        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        if (!archiveSuffix(first).isEmpty()) {
+            menu.addAction(QIcon::fromTheme("archive-extract"), tr("Extrair aqui"), this, [this, first] { extract(first, false); });
+            menu.addAction(tr("Extrair em pasta própria"), this, [this, first] { extract(first, true); });
+        }
+        menu.addSeparator();
+        menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
+    } else {
+        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        menu.addAction(tr("Copiar caminhos"), this, [this, sel] { copyPathsToClipboard(sel); });
+        addPaste();
+        menu.addSeparator();
+        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addSeparator();
+        addNewMenu(&menu);
     }
 
-    // --- Novo ---
-    QMenu *nw = menu.addMenu(QIcon::fromTheme("document-new"), tr("Novo"));
+    if (contextMenuHook)
+        contextMenuHook(&menu, sel);
+    menu.exec(v->viewport()->mapToGlobal(pos));
+}
+
+void FileTab::addNewMenu(QMenu *menu)
+{
+    QMenu *nw = menu->addMenu(QIcon::fromTheme("document-new"), tr("Novo"));
     nw->addAction(QIcon::fromTheme("folder-new"), tr("Pasta…"), this, [this] { newFolder(); });
-    nw->addSeparator();
-    nw->addAction(tr("Arquivo de texto (.txt)"), this, [this] { newFile("novo.txt"); });
+    nw->addAction(tr("Arquivo vazio…"), this, [this] { newFile("arquivo"); });
+    nw->addAction(tr("Texto (.txt)"), this, [this] { newFile("novo.txt"); });
     nw->addAction(tr("Markdown (.md)"), this, [this] { newFile("novo.md", "# Título\n"); });
-    nw->addAction(tr("HTML (.html)"), this, [this] {
+    nw->addSeparator();
+
+    QMenu *code = nw->addMenu(tr("Código e dados"));
+    code->addAction(tr("HTML (.html)"), this, [this] {
         newFile("index.html", "<!DOCTYPE html>\n<html lang=\"pt-BR\">\n<head>\n  <meta charset=\"utf-8\">\n"
                               "  <title></title>\n</head>\n<body>\n\n</body>\n</html>\n");
     });
-    nw->addAction(tr("Script shell (.sh)"), this, [this] { newFile("script.sh", "#!/usr/bin/env bash\nset -euo pipefail\n\n", true); });
-    nw->addAction(tr("Script Python (.py)"), this, [this] { newFile("script.py", "#!/usr/bin/env python3\n\n"); });
-    nw->addAction(tr("JSON (.json)"), this, [this] { newFile("dados.json", "{}\n"); });
-    nw->addAction(tr("Arquivo vazio…"), this, [this] { newFile("arquivo"); });
+    code->addAction(tr("JSON (.json)"), this, [this] { newFile("dados.json", "{}\n"); });
+    code->addAction(tr("Script shell (.sh)"), this,
+                    [this] { newFile("script.sh", "#!/usr/bin/env bash\nset -euo pipefail\n\n", true); });
+    code->addAction(tr("Script Python (.py)"), this,
+                    [this] { newFile("script.py", "#!/usr/bin/env python3\n\n"); });
 
-    const QString tplDir = QStandardPaths::writableLocation(QStandardPaths::TemplatesLocation);
+    const QString tplDir = templatesDirForTests.isEmpty()
+                               ? QStandardPaths::writableLocation(QStandardPaths::TemplatesLocation)
+                               : templatesDirForTests;
     const auto tpls = QDir(tplDir).entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::Name);
     if (!tpls.isEmpty()) {
         nw->addSeparator();
@@ -583,49 +863,227 @@ void FileTab::showContextMenu(const QPoint &pos)
             tm->addAction(t.fileName(), this, [this, p] { newFromTemplate(p); });
         }
     }
-    menu.addSeparator();
+}
 
-    if (!sel.isEmpty()) {
-        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this] { copyToClipboard(false); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this] { copyToClipboard(true); });
-    }
-    QAction *pasteAct = menu.addAction(QIcon::fromTheme("edit-paste"), tr("Colar"), this, [this] { paste(); });
-    const QMimeData *md = QGuiApplication::clipboard()->mimeData();
-    pasteAct->setEnabled(md && md->hasUrls());
+void FileTab::addViewMenu(QMenu *menu)
+{
+    QAction *details = menu->addAction(tr("Lista detalhada"));
+    QAction *grid = menu->addAction(tr("Grade de ícones"));
+    details->setCheckable(true);
+    grid->setCheckable(true);
+    const bool icons = m_iconsAct && m_iconsAct->isChecked();
+    details->setChecked(!icons);
+    grid->setChecked(icons);
+    connect(details, &QAction::triggered, this, [this] {
+        if (m_iconsAct)
+            m_iconsAct->setChecked(false);
+    });
+    connect(grid, &QAction::triggered, this, [this] {
+        if (m_iconsAct)
+            m_iconsAct->setChecked(true);
+    });
 
-    if (!sel.isEmpty()) {
-        menu.addSeparator();
-        if (one)
-            menu.addAction(tr("Renomear"), this, [this] { renameCurrent(); });
-        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this] { trashSelected(); });
-        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this] { deleteSelected(); });
-        menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
-        if (one && !archiveSuffix(first).isEmpty()) {
-            menu.addAction(QIcon::fromTheme("archive-extract"), tr("Extrair aqui"), this, [this, first] { extract(first, false); });
-            menu.addAction(tr("Extrair em pasta própria"), this, [this, first] { extract(first, true); });
+    menu->addSeparator();
+    if (m_previewAct)
+        menu->addAction(m_previewAct);
+    if (m_hiddenAct)
+        menu->addAction(m_hiddenAct);
+
+    menu->addSeparator();
+    if (m_zoomInAct)
+        menu->addAction(m_zoomInAct);
+    if (m_zoomOutAct)
+        menu->addAction(m_zoomOutAct);
+    if (m_zoomResetAct)
+        menu->addAction(m_zoomResetAct);
+}
+
+void FileTab::addOpenWithMenu(QMenu *menu, const QString &path)
+{
+    if (!menu)
+        return;
+
+    const QPointer<QMenu> popup = menu;
+    QAction *chooser = menu->addAction(tr("Escolher executável…"), this, [this, path] {
+        const QString program = executableChooserHook ? executableChooserHook()
+                                                      : QFileDialog::getOpenFileName(
+                                                            this, tr("Escolher executável…"), m_path);
+        if (!program.isEmpty())
+            launchProgram(program, QStringList{ path }, QString(), true);
+    });
+
+    const auto fill = [this, popup, chooser, path](const QStringList &ids) {
+        if (!popup)
+            return;
+        QStringList seen;
+        bool added = false;
+        for (const QString &id : ids) {
+            const QString clean = id.trimmed();
+            if (clean.isEmpty() || seen.contains(clean))
+                continue;
+            seen << clean;
+            const QString desktop = desktopFileForId(clean);
+            auto *entry = new QAction(desktopAppName(desktop, clean), popup.data());
+            popup->insertAction(chooser, entry);
+            connect(entry, &QAction::triggered, popup.data(), [this, desktop, path] {
+                openWithDesktop(desktop, path);
+            });
+            added = true;
         }
-        if (one) {
-            menu.addSeparator();
-            menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
-        }
+        if (added)
+            popup->insertSeparator(chooser);
+    };
+
+    if (mimeQueryForTestsSet) {
+        fill(mimeIdsForTests);
+        return;
     }
 
-    menu.exec(v->viewport()->mapToGlobal(vp));
+    const QString mime = QMimeDatabase().mimeTypeForFile(QFileInfo(path)).name();
+    if (mime.isEmpty())
+        return;
+
+    struct QueryState {
+        int remaining = 2;
+        bool done = false;
+        QString defaultId;
+        QStringList gioIds;
+    };
+    auto state = std::make_shared<QueryState>();
+    auto defaultDone = std::make_shared<bool>(false);
+    auto gioDone = std::make_shared<bool>(false);
+
+    const auto oneDone = [state, fill] {
+        if (state->done || --state->remaining > 0)
+            return;
+        state->done = true;
+        QStringList ids;
+        if (!state->defaultId.isEmpty())
+            ids << state->defaultId;
+        ids << state->gioIds;
+        fill(ids);
+    };
+
+    auto *xdg = new QProcess(this);
+    const QPointer<QProcess> xdgGuard = xdg;
+    connect(xdg, &QProcess::finished, this,
+            [xdgGuard, state, defaultDone, oneDone](int, QProcess::ExitStatus) {
+                if (!*defaultDone) {
+                    *defaultDone = true;
+                    const QString out = QString::fromUtf8(xdgGuard ? xdgGuard->readAllStandardOutput()
+                                                                   : QByteArray());
+                    state->defaultId = out.trimmed().section(QLatin1Char('\n'), 0, 0).trimmed();
+                    oneDone();
+                }
+                if (xdgGuard)
+                    xdgGuard->deleteLater();
+            });
+    connect(xdg, &QProcess::errorOccurred, this,
+            [xdgGuard, defaultDone, oneDone](QProcess::ProcessError) {
+                if (!*defaultDone) {
+                    *defaultDone = true;
+                    oneDone();
+                }
+                if (xdgGuard)
+                    xdgGuard->deleteLater();
+            });
+    xdg->start(QStringLiteral("xdg-mime"),
+               {QStringLiteral("query"), QStringLiteral("default"), mime});
+
+    auto *gio = new QProcess(this);
+    const QPointer<QProcess> gioGuard = gio;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("LC_ALL"), QStringLiteral("C"));
+    gio->setProcessEnvironment(env);
+    connect(gio, &QProcess::finished, this,
+            [gioGuard, state, gioDone, oneDone](int, QProcess::ExitStatus) {
+                if (!*gioDone) {
+                    *gioDone = true;
+                    const QByteArray out = gioGuard ? gioGuard->readAllStandardOutput() : QByteArray();
+                    state->gioIds = gioRegisteredApps(out);
+                    oneDone();
+                }
+                if (gioGuard)
+                    gioGuard->deleteLater();
+            });
+    connect(gio, &QProcess::errorOccurred, this,
+            [gioGuard, gioDone, oneDone](QProcess::ProcessError) {
+                if (!*gioDone) {
+                    *gioDone = true;
+                    oneDone();
+                }
+                if (gioGuard)
+                    gioGuard->deleteLater();
+            });
+    gio->start(QStringLiteral("gio"), {QStringLiteral("mime"), mime});
+}
+
+void FileTab::openWithDesktop(const QString &desktop, const QString &path)
+{
+    if (desktop.isEmpty() || path.isEmpty()) {
+        emit statusMessage(tr("Aplicativo não encontrado"));
+        return;
+    }
+    launchProgram(QStringLiteral("gio"), QStringList{QStringLiteral("launch"), desktop, path}, QString());
+}
+
+void FileTab::launchProgram(const QString &program, const QStringList &args, const QString &cwd,
+                            bool detached)
+{
+    if (program.isEmpty())
+        return;
+
+    if (launchHook) {
+        if (!launchHook(program, args, cwd))
+            emit statusMessage(tr("Falha ao abrir o arquivo"));
+        return;
+    }
+
+    if (detached) {
+        if (!QProcess::startDetached(program, args, cwd))
+            emit statusMessage(tr("Falha ao abrir o arquivo"));
+        return;
+    }
+
+    auto *proc = new QProcess(this);
+    const QPointer<QProcess> guard = proc;
+    const auto reported = std::make_shared<bool>(false);
+    const auto failure = [this, reported] {
+        if (*reported)
+            return;
+        *reported = true;
+        emit statusMessage(tr("Falha ao abrir o arquivo"));
+    };
+    connect(proc, &QProcess::errorOccurred, this, [guard, failure](QProcess::ProcessError) {
+        failure();
+        if (guard)
+            guard->deleteLater();
+    });
+    connect(proc, &QProcess::finished, this,
+            [guard, failure, reported](int code, QProcess::ExitStatus status) {
+                if (status == QProcess::NormalExit && code == 0)
+                    *reported = true;
+                else
+                    failure();
+                if (guard)
+                    guard->deleteLater();
+            });
+    if (!cwd.isEmpty())
+        proc->setWorkingDirectory(cwd);
+    proc->start(program, args);
 }
 
 // ---------- operações de arquivo ----------
 
-void FileTab::copyToClipboard(bool cut)
+void FileTab::copyToClipboard(bool cut, const QStringList &paths)
 {
-    const QStringList sel = selectedPaths();
-    if (sel.isEmpty())
+    if (paths.isEmpty())
         return;
 
     auto *md = new QMimeData;
     QList<QUrl> urls;
     QByteArray gnome = cut ? "cut" : "copy";
-    for (const QString &p : sel) {
+    for (const QString &p : paths) {
         const QUrl u = QUrl::fromLocalFile(p);
         urls << u;
         gnome += '\n' + u.toEncoded();
@@ -634,8 +1092,18 @@ void FileTab::copyToClipboard(bool cut)
     md->setData(QStringLiteral("application/x-kde-cutselection"), cut ? "1" : "0");
     md->setData(QStringLiteral("x-special/gnome-copied-files"), gnome);
     QGuiApplication::clipboard()->setMimeData(md);
-    emit statusMessage(cut ? tr("%1 item(ns) recortado(s)").arg(sel.size())
-                           : tr("%1 item(ns) copiado(s)").arg(sel.size()));
+    emit statusMessage(cut ? tr("%1 item(ns) recortado(s)").arg(paths.size())
+                           : tr("%1 item(ns) copiado(s)").arg(paths.size()));
+}
+
+void FileTab::copyPathsToClipboard(const QStringList &paths)
+{
+    if (paths.isEmpty())
+        return;
+
+    auto *md = new QMimeData;
+    md->setText(paths.join(QLatin1Char('\n')));
+    QGuiApplication::clipboard()->setMimeData(md);
 }
 
 void FileTab::paste()
@@ -683,38 +1151,41 @@ void FileTab::paste()
                             : tr("%1 item(ns) colado(s)").arg(ok));
 }
 
-void FileTab::trashSelected()
+void FileTab::trashSelected(const QStringList &paths)
 {
-    const QStringList sel = selectedPaths();
     int ok = 0, fail = 0;
-    for (const QString &p : sel)
+    for (const QString &p : paths)
         QFile::moveToTrash(p) ? ++ok : ++fail;
-    if (!sel.isEmpty())
+    if (!paths.isEmpty())
         emit statusMessage(fail ? tr("%1 na lixeira, %2 falha(s)").arg(ok).arg(fail)
                                 : tr("%1 item(ns) movido(s) para a lixeira").arg(ok));
 }
 
-void FileTab::deleteSelected()
+void FileTab::deleteSelected(const QStringList &paths)
 {
-    const QStringList sel = selectedPaths();
-    if (sel.isEmpty())
+    if (paths.isEmpty())
         return;
     const auto r = QMessageBox::warning(
         this, tr("Excluir permanentemente"),
-        tr("Excluir %1 item(ns) permanentemente? Essa ação não pode ser desfeita.").arg(sel.size()),
+        tr("Excluir %1 item(ns) permanentemente? Essa ação não pode ser desfeita.").arg(paths.size()),
         QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
     if (r != QMessageBox::Yes)
         return;
     int fail = 0;
-    for (const QString &p : sel)
+    for (const QString &p : paths)
         if (!removePath(p))
             ++fail;
     emit statusMessage(fail ? tr("%1 item(ns) não puderam ser excluídos").arg(fail) : tr("Excluído"));
 }
 
-void FileTab::renameCurrent()
+void FileTab::renameCurrent(const QString &path)
 {
-    const QModelIndex idx = currentView()->currentIndex();
+    if (path.isEmpty())
+        return;
+    const QModelIndex src = m_model->index(path);
+    if (!src.isValid())
+        return;
+    const QModelIndex idx = m_proxy->mapFromSource(src);
     if (idx.isValid())
         currentView()->edit(idx.siblingAtColumn(0));
 }
@@ -735,6 +1206,24 @@ void FileTab::showProperties(const QString &path)
     t += tr("Dono: %1  Grupo: %2\n").arg(fi.owner(), fi.group());
     t += tr("Permissões: %1").arg(QString::number(static_cast<uint>(fi.permissions()) & 0xFFF, 16));
     QMessageBox::information(this, tr("Propriedades"), t);
+}
+
+void FileTab::openTerminal(const QString &dir)
+{
+    const QString program = terminalProgram();
+    if (program.isEmpty()) {
+        emit statusMessage(tr("Nenhum terminal disponível"));
+        return;
+    }
+
+    if (launchHook) {
+        if (!launchHook(program, QStringList(), dir))
+            emit statusMessage(tr("Falha ao abrir o terminal"));
+        return;
+    }
+
+    if (!QProcess::startDetached(program, QStringList(), dir))
+        emit statusMessage(tr("Falha ao abrir o terminal"));
 }
 
 // ---------- criação de arquivos ----------

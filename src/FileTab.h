@@ -8,10 +8,12 @@
 #include <memory>
 
 class QAbstractItemView;
+class QAction;
 class QFileSystemModel;
 class QLabel;
 class QListView;
 class QListWidget;
+class QMenu;
 class QProcess;
 class QProgressDialog;
 class QStackedWidget;
@@ -23,17 +25,28 @@ void setRestoreBackupHookForTests(RestoreBackupHook hook);
 using WaitForProcessHook = std::function<bool(QProcess *, int)>;
 void setWaitForProcessHookForTests(WaitForProcessHook hook);
 void setPlacesForTests(const QStringList &paths);
+void setTemplatesDirForTests(const QString &dir);
+using ContextMenuHook = std::function<void(QMenu *, const QStringList &)>;
+void setContextMenuHookForTests(ContextMenuHook hook);
+void setMimeQueryForTests(const QStringList &ids);
+void clearMimeQueryForTestsForTests();
+using ExecutableChooserHook = std::function<QString()>;
+void setExecutableChooserForTests(ExecutableChooserHook hook);
+using LaunchHook = std::function<bool(const QString &, const QStringList &, const QString &)>;
+void setLaunchHookForTests(LaunchHook hook);
 
 class FileTab : public QWidget {
     Q_OBJECT
 public:
     explicit FileTab(const QString &startPath, QWidget *parent = nullptr);
 
+    QString desktopFileForId(const QString &id) const;
     QString currentPath() const { return m_path; }
     bool canGoBack() const { return m_histIdx > 0; }
     bool canGoForward() const { return m_histIdx < m_history.size() - 1; }
 
     bool goTo(const QString &path, bool addHistory = true);
+    void refreshModel();
     void back();
     void forward();
     void up();
@@ -42,6 +55,8 @@ public:
     int zoom() const { return m_zoom; }
     void setPreviewVisible(bool visible);
     void setShowHidden(bool show);
+    void setViewActions(QAction *icons, QAction *preview, QAction *hidden,
+                        QAction *zoomIn, QAction *zoomOut, QAction *zoomReset);
 
 signals:
     void zoomChanged(int percent);
@@ -56,16 +71,24 @@ private:
     QString pathOf(const QModelIndex &proxyIndex) const;
     void openPath(const QString &path);
     void showContextMenu(const QPoint &pos);
+    void addNewMenu(QMenu *menu);
+    void addViewMenu(QMenu *menu);
+    void addOpenWithMenu(QMenu *menu, const QString &path);
+    void openWithDesktop(const QString &desktop, const QString &path);
+    void launchProgram(const QString &program, const QStringList &args, const QString &cwd,
+                       bool detached = false);
     void onSelectionChanged();
     void updatePreview();
     void updatePlacesSelection();
 
-    void copyToClipboard(bool cut);
+    void copyToClipboard(bool cut, const QStringList &paths);
     void paste();
-    void trashSelected();
-    void deleteSelected();
-    void renameCurrent();
+    void copyPathsToClipboard(const QStringList &paths);
+    void trashSelected(const QStringList &paths);
+    void deleteSelected(const QStringList &paths);
+    void renameCurrent(const QString &path);
     void showProperties(const QString &path);
+    void openTerminal(const QString &dir);
 
     void newFolder();
     void newFile(const QString &suggested, const QString &content = QString(), bool executable = false);
@@ -96,4 +119,11 @@ private:
     QSize m_treeIconBase;
     QSize m_gridIconBase;
     QSize m_gridBase;
+
+    QAction *m_iconsAct = nullptr;
+    QAction *m_previewAct = nullptr;
+    QAction *m_hiddenAct = nullptr;
+    QAction *m_zoomInAct = nullptr;
+    QAction *m_zoomOutAct = nullptr;
+    QAction *m_zoomResetAct = nullptr;
 };
