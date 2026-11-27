@@ -71,7 +71,11 @@ mostra as mesmas ações de item e não oferece forma de ajustar a visão ali me
   item (coluna 0, linhas) e usá-lo como alvo.
 - Área vazia: `clearSelection()`; o alvo é `m_path` (pasta atual).
 - As ações capturam `sel` por valor quando o menu é construído, para que o
-  alvo não mude se a seleção mudar enquanto o menu está aberto.
+  alvo não mude se a seleção mudar enquanto o menu está aberto. Para isso,
+  `copyToClipboard`, `trashSelected`, `deleteSelected` e `renameCurrent` passam
+  a receber o alvo explicitamente (`QStringList`/`QString`) em vez de relerem a
+  seleção no disparo; as chamadas internas fora do menu passam a seleção corrente.
+  Decisão do builder: refatorar as assinaturas, sem depender da seleção visual.
 
 ### Composição dos menus
 
@@ -79,7 +83,9 @@ mostra as mesmas ações de item e não oferece forma de ajustar a visão ali me
   Abrir terminal aqui, Propriedades da pasta.
 - **Arquivo:** Abrir, Abrir com… ▸, Copiar caminho, Novo ▸, Copiar, Recortar,
   Colar, Renomear, Mover para a lixeira, Excluir permanentemente, Compactar…,
-  Propriedades.
+  Extrair aqui e Extrair em pasta própria (quando for compactado),
+  Propriedades. As extrações já existem e não são removidas — omissão corrigida
+  após o builder-check, conforme o escopo da Issue.
 - **Pasta:** Abrir, Abrir em nova aba, Abrir terminal nesta pasta, Copiar caminho,
   Novo ▸, Copiar, Recortar, Colar, Renomear, remoção, Compactar…, Propriedades.
 - **Seleção múltipla:** Copiar, Recortar, Copiar caminhos, Colar, Compactar…,
