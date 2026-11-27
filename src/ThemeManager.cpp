@@ -96,7 +96,10 @@ void ThemeManager::reload()
     }
     const auto colors = parseColors(f.readAll());
     if (!colors.contains(QStringLiteral("surface")) && !colors.contains(QStringLiteral("background"))) {
-        applyDefault();
+        // Uma gravação pode deixar o JSON inválido por instantes: manter a última
+        // paleta boa evita um flash para o padrão do Qt.
+        if (!m_applied)
+            applyDefault();
         return;
     }
     applyShellColors(colors);
@@ -106,6 +109,7 @@ void ThemeManager::applyDefault()
 {
     qApp->setPalette(m_basePalette);
     qApp->setStyleSheet(QString());
+    m_applied = false;
     emit themeApplied(false);
 }
 
@@ -180,5 +184,6 @@ void ThemeManager::applyShellColors(const QHash<QString, QColor> &c)
 
     qApp->setPalette(p);
     qApp->setStyleSheet(qss);
+    m_applied = true;
     emit themeApplied(true);
 }
