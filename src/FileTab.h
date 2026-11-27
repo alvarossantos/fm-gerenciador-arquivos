@@ -8,6 +8,7 @@
 #include <memory>
 
 class QAbstractItemView;
+class QAction;
 class QFileSystemModel;
 class QLabel;
 class QListView;
