@@ -137,8 +137,10 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
             static_cast<FileTab *>(m_tabs->widget(i))->setShowHidden(on);
     });
     auto applyZoom = [this](int delta) {
-        if (auto *t = currentTab())
-            t->setZoom(delta == 0 ? 100 : t->zoom() + delta);
+        auto *active = currentTab();
+        const int target = active ? (delta == 0 ? 100 : active->zoom() + delta) : 100;
+        for (int i = 0; i < m_tabs->count(); ++i)
+            static_cast<FileTab *>(m_tabs->widget(i))->setZoom(target);
     };
     connect(m_zoomInAct, &QAction::triggered, this, [applyZoom] { applyZoom(25); });
     connect(m_zoomOutAct, &QAction::triggered, this, [applyZoom] { applyZoom(-25); });

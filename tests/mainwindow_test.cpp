@@ -74,6 +74,7 @@ private slots:
     void tabBarHiddenWithSingleTab();
     void closingDownToOneTabHidesBarAgain();
     void zoomActionsReachActiveTab();
+    void zoomActionsApplyToAllTabs();
 };
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
@@ -594,6 +595,35 @@ void MainWindowTest::zoomActionsReachActiveTab()
     tab->setZoom(200);
     zoomReset->trigger();
     QCOMPARE(tab->zoom(), 100);
+}
+
+void MainWindowTest::zoomActionsApplyToAllTabs()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(QDir().mkpath(root.path()));
+
+    MainWindow w(root.path());
+    w.show();
+    QApplication::processEvents();
+
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    QAction *newTab = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTab);
+    newTab->trigger();
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 2);
+
+    QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
+    QVERIFY(zoomIn);
+    zoomIn->trigger();
+    QApplication::processEvents();
+
+    for (int i = 0; i < tabs->count(); ++i) {
+        auto *tab = static_cast<FileTab *>(tabs->widget(i));
+        QVERIFY2(tab->zoom() > 100, qPrintable(QString("aba %1 ficou com zoom %2").arg(i).arg(tab->zoom())));
+    }
 }
 
 QTEST_MAIN(MainWindowTest)
