@@ -21,6 +21,7 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMimeDatabase>
+#include <QPointer>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QShortcut>
@@ -689,40 +690,47 @@ void FileTab::runBsdtar(const QStringList &args, const QString &okMessage,
                         std::function<bool()> publish)
 {
     auto *p = new QProcess(this);
+    const QPointer<FileTab> self = this;
+    const QPointer<QProgressDialog> dlg = progress;
     const auto canceled = std::make_shared<bool>(false);
     const auto cleanup = [scratch] {
         if (!scratch.isEmpty())
             QDir(scratch).removeRecursively();
     };
-    const auto finishUi = [this, p, progress] {
-        if (progress) {
-            progress->close();
-            progress->deleteLater();
+    const auto finishUi = [p, dlg] {
+        if (dlg) {
+            dlg->close();
+            dlg->deleteLater();
         }
         p->deleteLater();
     };
 
-    emit statusMessage(progress ? tr("Extraindo…") : tr("Trabalhando…"));
-    connect(p, &QProcess::errorOccurred, this, [this, p, canceled, cleanup, finishUi](QProcess::ProcessError e) {
+    if (self)
+        emit self->statusMessage(dlg ? tr("Extraindo…") : tr("Trabalhando…"));
+    connect(p, &QProcess::errorOccurred, this, [self, p, canceled, cleanup, finishUi](QProcess::ProcessError e) {
         if (e == QProcess::FailedToStart) {
-            emit statusMessage(tr("bsdtar não encontrado — instale o pacote libarchive"));
+            if (self)
+                emit self->statusMessage(tr("bsdtar não encontrado — instale o pacote libarchive"));
             Q_UNUSED(canceled)
             cleanup();
             finishUi();
         }
     });
     connect(p, &QProcess::finished, this,
-            [this, p, canceled, okMessage, publish, cleanup, finishUi](int code, QProcess::ExitStatus st) {
-                if (*canceled)
-                    emit statusMessage(tr("Extração cancelada"));
-                else if (st == QProcess::NormalExit && code == 0) {
-                    if (!publish || publish())
-                        emit statusMessage(okMessage);
-                    else
-                        emit statusMessage(tr("Não foi possível publicar a extração"));
-                } else {
+            [self, p, canceled, okMessage, publish, cleanup, finishUi](int code, QProcess::ExitStatus st) {
+                if (*canceled) {
+                    if (self)
+                        emit self->statusMessage(tr("Extração cancelada"));
+                } else if (st == QProcess::NormalExit && code == 0) {
+                    if (!publish || publish()) {
+                        if (self)
+                            emit self->statusMessage(okMessage);
+                    } else if (self) {
+                        emit self->statusMessage(tr("Não foi possível publicar a extração"));
+                    }
+                } else if (self) {
                     const QString err = QString::fromLocal8Bit(p->readAllStandardError()).trimmed();
-                    emit statusMessage(tr("Falhou: %1").arg(err.isEmpty() ? tr("erro desconhecido") : err.left(200)));
+                    emit self->statusMessage(tr("Falhou: %1").arg(err.isEmpty() ? tr("erro desconhecido") : err.left(200)));
                 }
                 cleanup();
                 finishUi();
@@ -765,7 +773,8 @@ void FileTab::compress(const QStringList &paths)
 
 void FileTab::extract(const QString &archive, bool intoFolder)
 {
-    QString dest = m_path;
+    const QString destDir = m_path;
+    QString dest = destDir;
     if (intoFolder) {
         QString base = QFileInfo(archive).fileName();
         base.chop(archiveSuffix(base).size());
@@ -779,8 +788,11 @@ void FileTab::extract(const QString &archive, bool intoFolder)
     }
     tmp.setAutoRemove(false);
     const QString scratch = tmp.path();
+    auto *lifetimeGuard = new QObject(this);
+    connect(this, &QObject::destroyed, lifetimeGuard,
+            [scratch] { QDir(scratch).removeRecursively(); });
 
-    auto *progress = new QProgressDialog(nullptr);
+    auto *progress = new QProgressDialog(this);
     progress->setWindowTitle(tr("Extrair"));
     progress->setLabelText(tr("Extraindo…"));
     progress->setCancelButtonText(tr("Cancelar"));
@@ -796,18 +808,36 @@ void FileTab::extract(const QString &archive, bool intoFolder)
             return !QFileInfo::exists(dest) && QDir().rename(scratch, dest);
         };
     } else {
-        publish = [this, scratch] {
+        publish = [destDir, scratch] {
             const auto entries = QDir(scratch).entryInfoList(
                 QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+            QList<QPair<QString, QString>> moved;
+            QList<QPair<QString, QString>> backedUp;
+            bool ok = true;
             for (const QFileInfo &e : entries) {
-                const QString dst = QDir(m_path).filePath(e.fileName());
-                if ((QFileInfo::exists(dst) || QFileInfo(dst).isSymLink()) && !removePath(dst))
-                    return false;
                 const QString src = e.absoluteFilePath();
-                if (!QFile::rename(src, dst) && !(copyRecursive(src, dst) && removePath(src)))
-                    return false;
+                const QString dst = QDir(destDir).filePath(e.fileName());
+                if (QFileInfo::exists(dst) || QFileInfo(dst).isSymLink()) {
+                    const QString backup = uniquePath(scratch, QStringLiteral(".fm-backup-") + e.fileName());
+                    if (!QFile::rename(dst, backup)) {
+                        ok = false;
+                        break;
+                    }
+                    backedUp.append(qMakePair(backup, dst));
+                }
+                if (!QFile::rename(src, dst) && !(copyRecursive(src, dst) && removePath(src))) {
+                    ok = false;
+                    break;
+                }
+                moved.append(qMakePair(src, dst));
             }
-            return true;
+            if (!ok) {
+                for (int i = moved.size() - 1; i >= 0; --i)
+                    QFile::rename(moved.at(i).second, moved.at(i).first);
+                for (int i = backedUp.size() - 1; i >= 0; --i)
+                    QFile::rename(backedUp.at(i).first, backedUp.at(i).second);
+            }
+            return ok;
         };
     }
 

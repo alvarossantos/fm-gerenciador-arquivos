@@ -56,19 +56,22 @@ operação, que é justamente o problema relatado.
 - `Extrair em pasta própria`: ao sucesso, `setAutoRemove(false)` e
   `QDir::rename(temp, destino)`; se `destino` já existir, aborta e apaga o temp.
 - `Extrair aqui`: ao sucesso, mover cada entrada de nível superior do temp
-  para `m_path` (`QFile::rename`, com `copyRecursive` como fallback entre
-  filesystems), removendo destino existente para preservar o comportamento do
-  bsdtar de sobrescrever.
+  para a pasta capturada no início da extração (`destDir`), não para a pasta
+  atual no fim. Destino existente é movido para backup dentro do temp antes
+  de ser sobrescrito; se qualquer entrada falhar, as publicações e os backups
+  já feitos são revertidos — nunca fica estado parcial.
 - `runBsdtar()` recebe opcionalmente o diálogo, o temporário e um callback de
   publicação; sem eles, comporta-se como hoje (compactação intacta).
-- Testes: caso novo em `filetab_test.cpp` com `bsdtar` falso no `PATH`, cobrindo
-  falha (arquivo criado no temp, processo encerrado com erro, nenhuma pasta
-  final) e cancelamento (processo killado, temp removido).
+- Testes: casos em `filetab_test.cpp` com `bsdtar` falso no `PATH`, cobrindo
+  falha, cancelamento, sucesso, rollback de publicação parcial, troca de pasta
+  durante a extração e cancelamento em `Extrair aqui`.
 
 ## Pendente para o implementador
 
-- Conferir o comportamento real do `QProgressDialog` não modal no offscreen e
-  no Umbriel; se o botão não aparecer, ajustar a forma de localizá-lo no teste
-  sem tornar o diálogo modal.
+- `QProgressDialog::cancel()` só marca `wasCanceled()`; o sinal `canceled()`
+  vem do clique no botão. O teste clica no botão.
+- Diálogo é filho do `FileTab` e o processo é protegido por `QPointer` para
+  evitar uso após destruição da aba; o scratch tem guarda de limpeza ligada a
+  `destroyed`.
 - Registrar no relatório da branch o que foi automatizado e o que exigiria
   validação manual no desktop.
