@@ -37,10 +37,13 @@ public:
     void forward();
     void up();
     void setIconMode(bool icons);
+    void setZoom(int percent);
+    int zoom() const { return m_zoom; }
     void setPreviewVisible(bool visible);
     void setShowHidden(bool show);
 
 signals:
+    void zoomChanged(int percent);
     void pathChanged(const QString &path);
     void titleChanged(const QString &title);
     void statusMessage(const QString &text);
@@ -88,4 +91,5 @@ private:
     QStringList m_history;
     int m_histIdx = -1;
     bool m_iconMode = false;
+    int m_zoom = 100;
 };

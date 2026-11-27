@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QListView>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -181,6 +182,8 @@ private slots:
     void extractHereKeepsBackupWhenRestoreFails();
     void closingTabStopsExtractionBeforeCleanup();
     void closingTabKeepsScratchWhenProcessDoesNotStop();
+    void zoomChangesIconAndGridSize();
+    void zoomClampsAndSurvivesModeSwitch();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -745,6 +748,41 @@ void FileTabTest::closingTabKeepsScratchWhenProcessDoesNotStop()
     QVERIFY(hookCalled);
     QVERIFY(hookSawRunning);
     QVERIFY2(!scratchDirs(root).isEmpty(), "processo ativo: o temporário não pode ser removido");
+}
+
+void FileTabTest::zoomChangesIconAndGridSize()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+
+    QCOMPARE(tab.zoom(), 100);
+    tab.setZoom(150);
+    QCOMPARE(tab.zoom(), 150);
+    QVERIFY(icons->iconSize().width() > 72);
+    QVERIFY(icons->gridSize().width() > 112);
+}
+
+void FileTabTest::zoomClampsAndSurvivesModeSwitch()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+
+    tab.setZoom(500);
+    QCOMPARE(tab.zoom(), 200);
+    tab.setZoom(10);
+    QCOMPARE(tab.zoom(), 50);
+
+    tab.setZoom(150);
+    tab.setIconMode(false);
+    tab.setIconMode(true);
+    QCOMPARE(tab.zoom(), 150);
 }
 
 QTEST_MAIN(FileTabTest)

@@ -73,6 +73,7 @@ private slots:
     void tabChangeDiscardsPendingEdit();
     void tabBarHiddenWithSingleTab();
     void closingDownToOneTabHidesBarAgain();
+    void zoomActionsReachActiveTab();
 };
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
@@ -559,6 +560,40 @@ void MainWindowTest::closingDownToOneTabHidesBarAgain()
     QCOMPARE(tabs->count(), 1);
     QVERIFY(!bar->isVisible());
     QVERIFY(newTab->isVisible());
+}
+
+void MainWindowTest::zoomActionsReachActiveTab()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QVERIFY(QDir().mkpath(root.path()));
+
+    MainWindow w(root.path());
+    w.show();
+    QApplication::processEvents();
+
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *tab = static_cast<FileTab *>(tabs->widget(0));
+    QVERIFY(tab);
+    QCOMPARE(tab->zoom(), 100);
+
+    QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
+    QVERIFY(zoomIn);
+    zoomIn->trigger();
+    QApplication::processEvents();
+    QVERIFY(tab->zoom() > 100);
+
+    QAction *zoomOut = findAction(&w, QStringLiteral("Diminuir zoom"));
+    QVERIFY(zoomOut);
+    zoomOut->trigger();
+    QCOMPARE(tab->zoom(), 100);
+
+    QAction *zoomReset = findAction(&w, QStringLiteral("Zoom original"));
+    QVERIFY(zoomReset);
+    tab->setZoom(200);
+    zoomReset->trigger();
+    QCOMPARE(tab->zoom(), 100);
 }
 
 QTEST_MAIN(MainWindowTest)

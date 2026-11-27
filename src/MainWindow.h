@@ -43,6 +43,7 @@ private:
     QToolButton *m_overflow;
     QAction *m_back, *m_forward, *m_up;
     QAction *m_iconsAct, *m_previewAct, *m_hiddenAct;
+    QAction *m_zoomInAct, *m_zoomOutAct, *m_zoomResetAct;
     bool m_bench = false;
     bool m_painted = false;
 };

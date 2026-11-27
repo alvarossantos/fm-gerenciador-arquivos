@@ -431,6 +431,17 @@ void FileTab::setIconMode(bool icons)
     m_stack->setCurrentWidget(icons ? static_cast<QWidget *>(m_icons) : static_cast<QWidget *>(m_tree));
 }
 
+void FileTab::setZoom(int percent)
+{
+    m_zoom = qBound(50, percent, 200);
+    const int side = 72 * m_zoom / 100;
+    const int cell = qMax(96, 112 * m_zoom / 100);
+    m_icons->setIconSize(QSize(side, side));
+    m_icons->setGridSize(QSize(cell, cell));
+    m_tree->setIconSize(QSize(side, side));
+    emit zoomChanged(m_zoom);
+}
+
 void FileTab::setPreviewVisible(bool visible)
 {
     m_previewPanel->setVisible(visible);

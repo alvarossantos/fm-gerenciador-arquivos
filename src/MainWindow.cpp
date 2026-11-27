@@ -98,10 +98,17 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_hiddenAct = tb->addAction(QIcon::fromTheme("view-visible"), tr("Mostrar arquivos ocultos (Ctrl+H)"));
     m_hiddenAct->setCheckable(true);
     m_hiddenAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_H));
+    m_zoomInAct = tb->addAction(QIcon::fromTheme("zoom-in"), tr("Aumentar zoom"));
+    m_zoomInAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Plus));
+    m_zoomOutAct = tb->addAction(QIcon::fromTheme("zoom-out"), tr("Diminuir zoom"));
+    m_zoomOutAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
+    m_zoomResetAct = tb->addAction(QIcon::fromTheme("zoom-original"), tr("Zoom original"));
+    m_zoomResetAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
     QAction *newTab = tb->addAction(QIcon::fromTheme("tab-new"), tr("Nova aba (Ctrl+T)"));
     newTab->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
 
-    for (QAction *a : {m_back, m_forward, m_up, m_iconsAct, m_previewAct, m_hiddenAct, newTab})
+    for (QAction *a : {m_back, m_forward, m_up, m_iconsAct, m_previewAct, m_hiddenAct,
+                       m_zoomInAct, m_zoomOutAct, m_zoomResetAct, newTab})
         addAction(a); // garante que os atalhos funcionem em toda a janela
 
     auto *focusPath = new QAction(this);
@@ -129,6 +136,13 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
         for (int i = 0; i < m_tabs->count(); ++i)
             static_cast<FileTab *>(m_tabs->widget(i))->setShowHidden(on);
     });
+    auto applyZoom = [this](int delta) {
+        if (auto *t = currentTab())
+            t->setZoom(delta == 0 ? 100 : t->zoom() + delta);
+    };
+    connect(m_zoomInAct, &QAction::triggered, this, [applyZoom] { applyZoom(25); });
+    connect(m_zoomOutAct, &QAction::triggered, this, [applyZoom] { applyZoom(-25); });
+    connect(m_zoomResetAct, &QAction::triggered, this, [applyZoom] { applyZoom(0); });
 
     connect(m_pathEdit, &QLineEdit::returnPressed, this, [this] {
         QString p = m_pathEdit->text().trimmed();
