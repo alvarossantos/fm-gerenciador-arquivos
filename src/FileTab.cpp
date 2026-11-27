@@ -205,6 +205,12 @@ void setMimeQueryForTests(const QStringList &ids)
     mimeQueryForTestsSet = true;
 }
 
+void clearMimeQueryForTestsForTests()
+{
+    mimeIdsForTests.clear();
+    mimeQueryForTestsSet = false;
+}
+
 void setExecutableChooserForTests(ExecutableChooserHook hook)
 {
     executableChooserHook = std::move(hook);

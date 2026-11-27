@@ -18,6 +18,7 @@
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QMenu>
+#include <QPointer>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -263,6 +264,7 @@ private slots:
     void openWithLaunchFailureReportsStatus();
     void openWithCancelStartsNothing();
     void openWithWithoutAssociationsOffersChooser();
+    void mimeHookResetRestoresAsyncQueries();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
     void extractionSuccessPublishesFolder();
@@ -764,7 +766,7 @@ void FileTabTest::openWithUsesDesktopPathAndSeparateArgs()
         called = true;
         return true;
     });
-    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+    const auto resetMime = qScopeGuard([] { clearMimeQueryForTestsForTests(); });
     const auto resetLaunch = qScopeGuard([] { setLaunchHookForTests({}); });
 
     FileTab tab(root);
@@ -823,7 +825,7 @@ void FileTabTest::gioLaunchPassesAccentedPathToDesktopApp()
 
     setLaunchHookForTests({});
     setMimeQueryForTests({QStringLiteral("test-editor.desktop")});
-    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+    const auto resetMime = qScopeGuard([] { clearMimeQueryForTestsForTests(); });
 
     FileTab tab(root);
     tab.show();
@@ -864,7 +866,7 @@ void FileTabTest::openWithLaunchFailureReportsStatus()
 
     setLaunchHookForTests({});
     setMimeQueryForTests({QStringLiteral("fail.desktop")});
-    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+    const auto resetMime = qScopeGuard([] { clearMimeQueryForTestsForTests(); });
 
     FileTab tab(root);
     QSignalSpy spy(&tab, &FileTab::statusMessage);
@@ -904,7 +906,7 @@ void FileTabTest::openWithCancelStartsNothing()
         launched = true;
         return true;
     });
-    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+    const auto resetMime = qScopeGuard([] { clearMimeQueryForTestsForTests(); });
     const auto resetChooser = qScopeGuard([] { setExecutableChooserForTests({}); });
     const auto resetLaunch = qScopeGuard([] { setLaunchHookForTests({}); });
 
@@ -932,7 +934,7 @@ void FileTabTest::openWithWithoutAssociationsOffersChooser()
 
     setMimeQueryForTests({});
     setExecutableChooserForTests([] { return QString(); });
-    const auto resetMime = qScopeGuard([] { setMimeQueryForTests({}); });
+    const auto resetMime = qScopeGuard([] { clearMimeQueryForTestsForTests(); });
     const auto resetChooser = qScopeGuard([] { setExecutableChooserForTests({}); });
 
     QStringList labels;
@@ -954,6 +956,92 @@ void FileTabTest::openWithWithoutAssociationsOffersChooser()
     openContextMenu(view, row);
 
     QCOMPARE(labels, QStringList{QStringLiteral("Escolher executável…")});
+}
+
+void FileTabTest::mimeHookResetRestoresAsyncQueries()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString apps = QDir(dir.path()).filePath(QStringLiteral("applications"));
+    const QString bin = QDir(dir.path()).filePath(QStringLiteral("bin"));
+    QVERIFY(QDir().mkpath(apps));
+    QVERIFY(QDir().mkpath(bin));
+
+    const QString desktop = writeDesktopFile(QDir(apps).filePath(QStringLiteral("real.editor.desktop")),
+                                             QStringLiteral("Editor Real"),
+                                             QStringLiteral("/bin/true %f"));
+    QVERIFY(!desktop.isEmpty());
+
+    {
+        QFile xdg(QDir(bin).filePath(QStringLiteral("xdg-mime")));
+        QVERIFY(xdg.open(QIODevice::WriteOnly));
+        xdg.write("#!/bin/sh\nprintf 'real.editor.desktop\\n'\n");
+    }
+    {
+        QFile gio(QDir(bin).filePath(QStringLiteral("gio")));
+        QVERIFY(gio.open(QIODevice::WriteOnly));
+        gio.write("#!/bin/sh\nprintf 'Registered applications:\\n\\treal.editor.desktop\\n"
+                  "Recommended applications:\\n'\n");
+    }
+    for (const QString &name : { QStringLiteral("xdg-mime"), QStringLiteral("gio") }) {
+        const QString script = QDir(bin).filePath(name);
+        QVERIFY(QFile::setPermissions(script, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner
+                                      | QFile::ReadGroup | QFile::ExeGroup | QFile::ReadOther | QFile::ExeOther));
+    }
+
+    const QByteArray oldPath = qgetenv("PATH");
+    qputenv("PATH", bin.toUtf8() + QByteArray(":") + oldPath);
+    const auto restorePath = qScopeGuard([oldPath] { qputenv("PATH", oldPath); });
+    const QByteArray oldXdg = qgetenv("XDG_DATA_HOME");
+    qputenv("XDG_DATA_HOME", QDir(dir.path()).absolutePath().toUtf8());
+    const auto restoreXdg = qScopeGuard([oldXdg] { qputenv("XDG_DATA_HOME", oldXdg); });
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    const QString file = QDir(root).filePath(QStringLiteral("consulta real.txt"));
+    { QFile f(file); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("conteúdo\n"); }
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    const QModelIndex row = findRowNamed(view, QFileInfo(file).fileName());
+    QVERIFY(row.isValid());
+
+    QStringList labels;
+    bool done = false;
+    setContextMenuHookForTests([&labels, &done](QMenu *menu, const QStringList &) {
+        const QPointer<QMenu> popup = menu;
+        auto checks = std::make_shared<int>(0);
+        for (int i = 1; i <= 100; ++i) {
+            QTimer::singleShot(i * 20, popup.data(), [popup, &labels, &done, checks] {
+                if (done || !popup)
+                    return;
+                if (++(*checks) >= 100) {
+                    done = true;
+                    QTimer::singleShot(0, popup.data(), [] { closePopups(); });
+                    return;
+                }
+                QAction *openWith = actionNamed(popup.data(), QStringLiteral("Abrir com…"));
+                if (!openWith || !openWith->menu())
+                    return;
+                if (actionNamed(openWith->menu(), QStringLiteral("Editor Real"))) {
+                    labels = collectMenuLabels(openWith->menu());
+                    done = true;
+                    QTimer::singleShot(0, popup.data(), [] { closePopups(); });
+                }
+            });
+        }
+    });
+    const auto resetContext = qScopeGuard([] { setContextMenuHookForTests({}); });
+
+    openContextMenu(view, row);
+
+    QVERIFY2(done, "as consultas assíncronas devem terminar enquanto o menu está aberto");
+    QVERIFY2(labels.contains(QStringLiteral("Editor Real")),
+             qPrintable(QStringLiteral("roteiros: %1").arg(labels.join(QLatin1String(" | ")))));
+    QVERIFY(labels.contains(QStringLiteral("Escolher executável…")));
 }
 
 void FileTabTest::extractionFailureDoesNotPublishFolder()

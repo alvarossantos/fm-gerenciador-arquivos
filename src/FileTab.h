@@ -29,6 +29,7 @@ void setTemplatesDirForTests(const QString &dir);
 using ContextMenuHook = std::function<void(QMenu *, const QStringList &)>;
 void setContextMenuHookForTests(ContextMenuHook hook);
 void setMimeQueryForTests(const QStringList &ids);
+void clearMimeQueryForTestsForTests();
 using ExecutableChooserHook = std::function<QString()>;
 void setExecutableChooserForTests(ExecutableChooserHook hook);
 using LaunchHook = std::function<bool(const QString &, const QStringList &, const QString &)>;
