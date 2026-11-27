@@ -30,4 +30,5 @@ private:
     QFileSystemWatcher m_watcher;
     QTimer m_debounce;
     QPalette m_basePalette;
+    bool m_applied = false;
 };

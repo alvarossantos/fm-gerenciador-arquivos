@@ -3,13 +3,16 @@
 
 #include <QAction>
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QDir>
 #include <QLineEdit>
+#include <QPaintEvent>
 #include <QSettings>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTimer>
 #include <QToolBar>
 
 MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(parent)
@@ -173,4 +176,19 @@ void MainWindow::closeEvent(QCloseEvent *e)
     QSettings s(QStringLiteral("fm"), QStringLiteral("fm"));
     s.setValue(QStringLiteral("window/geometry"), saveGeometry());
     QMainWindow::closeEvent(e);
+}
+
+void MainWindow::setBenchMode(bool on)
+{
+    m_bench = on;
+}
+
+void MainWindow::paintEvent(QPaintEvent *e)
+{
+    QMainWindow::paintEvent(e);
+    if (m_bench && !m_painted) {
+        m_painted = true;
+        emit firstPaint();
+        QTimer::singleShot(0, qApp, &QCoreApplication::quit);
+    }
 }

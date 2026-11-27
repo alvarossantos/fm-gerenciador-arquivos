@@ -14,13 +14,17 @@ O app lê um JSON de cores (estilo matugen/Material You, chaves como `surface`,
 sozinho quando o arquivo muda.
 
 Ordem de busca do arquivo:
-1. `--theme-file /caminho/colors.json`
+1. `--theme-file /caminho/app-palette.json`
 2. variável `FM_THEME_FILE`
 3. `QSettings` (chave `theme/file`, em ~/.config/fm/fm.conf)
-4. padrão: `~/.local/state/quickshell/user/generated/colors.json`  (CONFIRA no seu iNiR)
+4. padrão: `~/.local/state/quickshell/user/generated/app-palette.json`
+
+No iNiR, `colors.json` é a paleta da shell/UI; `app-palette.json` é a paleta
+publicada para apps Qt/GTK. O launcher em `packaging/fm.desktop` fixa a fonte.
 
 Se o JSON tiver `colors.dark`/`colors.light`, escolha com `FM_THEME_MODE=dark|light`.
-Sem arquivo válido, usa a paleta padrão do Qt.
+Sem arquivo válido no boot, usa a paleta padrão do Qt. Depois de uma paleta
+aplicada, JSON inválido ou arquivo ausente retêm a última paleta válida.
 
 ## Atalhos
 Alt+←/→/↑ navegar · Ctrl+T/W abas · Ctrl+L barra de caminho · Ctrl+1 ícones/detalhes

@@ -21,14 +21,19 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMimeDatabase>
+#include <QPointer>
 #include <QProcess>
+#include <QProgressDialog>
 #include <QShortcut>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTreeView>
 #include <QUrl>
 #include <QVBoxLayout>
+
+#include <memory>
 
 namespace {
 
@@ -101,7 +106,30 @@ QString archiveSuffix(const QString &name)
     return QString();
 }
 
+RestoreBackupHook restoreBackupHook;
+WaitForProcessHook waitForProcessHook;
+
+bool waitForProcess(QProcess *proc, int msecs)
+{
+    return waitForProcessHook ? waitForProcessHook(proc, msecs) : proc->waitForFinished(msecs);
+}
+
+bool restoreBackup(const QString &backup, const QString &dst)
+{
+    return restoreBackupHook ? restoreBackupHook(backup, dst) : QFile::rename(backup, dst);
+}
+
 } // namespace
+
+void setRestoreBackupHookForTests(RestoreBackupHook hook)
+{
+    restoreBackupHook = std::move(hook);
+}
+
+void setWaitForProcessHookForTests(WaitForProcessHook hook)
+{
+    waitForProcessHook = std::move(hook);
+}
 
 FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
 {
@@ -680,26 +708,65 @@ void FileTab::newFromTemplate(const QString &templatePath)
 
 // ---------- compactação / descompactação (libarchive via bsdtar) ----------
 
-void FileTab::runBsdtar(const QStringList &args, const QString &okMessage)
+QProcess *FileTab::runBsdtar(const QStringList &args, const QString &okMessage,
+                             QProgressDialog *progress, const QString &scratch,
+                             std::function<bool()> publish, const std::shared_ptr<bool> &keepScratch)
 {
     auto *p = new QProcess(this);
-    emit statusMessage(tr("Trabalhando…"));
-    connect(p, &QProcess::errorOccurred, this, [this, p](QProcess::ProcessError e) {
-        if (e == QProcess::FailedToStart) {
-            emit statusMessage(tr("bsdtar não encontrado — instale o pacote libarchive"));
-            p->deleteLater();
-        }
-    });
-    connect(p, &QProcess::finished, this, [this, p, okMessage](int code, QProcess::ExitStatus st) {
-        if (st == QProcess::NormalExit && code == 0) {
-            emit statusMessage(okMessage);
-        } else {
-            const QString err = QString::fromLocal8Bit(p->readAllStandardError()).trimmed();
-            emit statusMessage(tr("Falhou: %1").arg(err.isEmpty() ? tr("erro desconhecido") : err.left(200)));
+    const QPointer<FileTab> self = this;
+    const QPointer<QProgressDialog> dlg = progress;
+    const auto canceled = std::make_shared<bool>(false);
+    const auto cleanup = [scratch, keepScratch] {
+        if (!scratch.isEmpty() && !(keepScratch && *keepScratch))
+            QDir(scratch).removeRecursively();
+    };
+    const auto finishUi = [p, dlg] {
+        if (dlg) {
+            dlg->close();
+            dlg->deleteLater();
         }
         p->deleteLater();
+    };
+
+    if (self)
+        emit self->statusMessage(dlg ? tr("Extraindo…") : tr("Trabalhando…"));
+    connect(p, &QProcess::errorOccurred, this, [self, p, canceled, cleanup, finishUi](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart) {
+            if (self)
+                emit self->statusMessage(tr("bsdtar não encontrado — instale o pacote libarchive"));
+            Q_UNUSED(canceled)
+            cleanup();
+            finishUi();
+        }
     });
+    connect(p, &QProcess::finished, this,
+            [self, p, canceled, okMessage, publish, cleanup, finishUi, keepScratch](int code, QProcess::ExitStatus st) {
+                if (*canceled) {
+                    if (self)
+                        emit self->statusMessage(tr("Extração cancelada"));
+                } else if (st == QProcess::NormalExit && code == 0) {
+                    if (!publish || publish()) {
+                        if (self)
+                            emit self->statusMessage(okMessage);
+                    } else if (self && !(keepScratch && *keepScratch)) {
+                        emit self->statusMessage(tr("Não foi possível publicar a extração"));
+                    }
+                } else if (self) {
+                    const QString err = QString::fromLocal8Bit(p->readAllStandardError()).trimmed();
+                    emit self->statusMessage(tr("Falhou: %1").arg(err.isEmpty() ? tr("erro desconhecido") : err.left(200)));
+                }
+                cleanup();
+                finishUi();
+            });
+    if (progress) {
+        connect(progress, &QProgressDialog::canceled, this, [p, canceled] {
+            *canceled = true;
+            if (p->state() != QProcess::NotRunning)
+                p->kill();
+        });
+    }
     p->start(QStringLiteral("bsdtar"), args);
+    return p;
 }
 
 void FileTab::compress(const QStringList &paths)
@@ -730,16 +797,103 @@ void FileTab::compress(const QStringList &paths)
 
 void FileTab::extract(const QString &archive, bool intoFolder)
 {
-    QString dest = m_path;
+    const QString destDir = m_path;
+    QString dest = destDir;
     if (intoFolder) {
         QString base = QFileInfo(archive).fileName();
         base.chop(archiveSuffix(base).size());
         dest = uniquePath(m_path, base.isEmpty() ? QStringLiteral("extraido") : base);
-        if (!QDir().mkpath(dest)) {
-            emit statusMessage(tr("Não foi possível criar a pasta de destino"));
-            return;
-        }
     }
+
+    QTemporaryDir tmp(QDir(m_path).filePath(QStringLiteral(".fm-extract-XXXXXX")));
+    if (!tmp.isValid()) {
+        emit statusMessage(tr("Não foi possível criar a pasta de destino"));
+        return;
+    }
+    tmp.setAutoRemove(false);
+    const QString scratch = tmp.path();
+    auto keepScratch = std::make_shared<bool>(false);
+    const QPointer<FileTab> self = this;
+
+    auto *progress = new QProgressDialog(this);
+    progress->setWindowTitle(tr("Extrair"));
+    progress->setLabelText(tr("Extraindo…"));
+    progress->setCancelButtonText(tr("Cancelar"));
+    progress->setRange(0, 0);
+    progress->setMinimumDuration(0);
+    progress->setAutoClose(false);
+    progress->setWindowModality(Qt::NonModal);
+    progress->show();
+
+    std::function<bool()> publish;
+    if (intoFolder) {
+        publish = [scratch, dest] {
+            return !QFileInfo::exists(dest) && QDir().rename(scratch, dest);
+        };
+    } else {
+        publish = [self, destDir, scratch, keepScratch] {
+            const auto entries = QDir(scratch).entryInfoList(
+                QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+            QList<QPair<QString, QString>> moved;
+            QList<QPair<QString, QString>> backedUp;
+            bool ok = true;
+            for (const QFileInfo &e : entries) {
+                const QString src = e.absoluteFilePath();
+                const QString dst = QDir(destDir).filePath(e.fileName());
+                if (QFileInfo::exists(dst) || QFileInfo(dst).isSymLink()) {
+                    const QString backup = uniquePath(scratch, QStringLiteral(".fm-backup-") + e.fileName());
+                    if (!QFile::rename(dst, backup)) {
+                        ok = false;
+                        break;
+                    }
+                    backedUp.append(qMakePair(backup, dst));
+                }
+                if (!QFile::rename(src, dst) && !(copyRecursive(src, dst) && removePath(src))) {
+                    ok = false;
+                    break;
+                }
+                moved.append(qMakePair(src, dst));
+            }
+            if (!ok) {
+                for (int i = moved.size() - 1; i >= 0; --i)
+                    QFile::rename(moved.at(i).second, moved.at(i).first);
+                bool restoredAll = true;
+                QString failedBackup;
+                for (int i = backedUp.size() - 1; i >= 0; --i) {
+                    const QString backup = backedUp.at(i).first;
+                    if (!restoreBackup(backup, backedUp.at(i).second)) {
+                        restoredAll = false;
+                        if (failedBackup.isEmpty())
+                            failedBackup = backup;
+                    }
+                }
+                if (!restoredAll) {
+                    *keepScratch = true;
+                    if (self)
+                        emit self->statusMessage(tr("Não foi possível restaurar o original; cópia mantida em %1")
+                                                     .arg(failedBackup));
+                }
+            }
+            return ok;
+        };
+    }
+
     // bsdtar, por padrão, recusa caminhos absolutos e “..” (proteção contra zip-slip).
-    runBsdtar({"-x", "-f", archive, "-C", dest}, tr("Extraído em %1").arg(dest));
+    QProcess *proc = runBsdtar({"-x", "-f", archive, "-C", scratch}, tr("Extraído em %1").arg(dest),
+                               progress, scratch, publish, keepScratch);
+    const QPointer<QProcess> procGuard = proc;
+    auto *lifetimeGuard = new QObject(this);
+    connect(this, &QObject::destroyed, lifetimeGuard, [procGuard, scratch, keepScratch] {
+        bool stopped = !procGuard || procGuard->state() == QProcess::NotRunning;
+        if (!stopped) {
+            procGuard->kill();
+            stopped = waitForProcess(procGuard.data(), 2000);
+        }
+        if (!stopped) {
+            // finished/errorOccurred também limpam; impedir que apaguem arquivo em uso.
+            *keepScratch = true;
+        } else if (!(keepScratch && *keepScratch)) {
+            QDir(scratch).removeRecursively();
+        }
+    });
 }

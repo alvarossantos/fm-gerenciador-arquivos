@@ -3,14 +3,24 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <functional>
+#include <memory>
+
 class QAbstractItemView;
 class QFileSystemModel;
 class QLabel;
 class QListView;
 class QListWidget;
+class QProcess;
+class QProgressDialog;
 class QStackedWidget;
 class QTreeView;
 class ThumbnailProxy;
+
+using RestoreBackupHook = std::function<bool(const QString &, const QString &)>;
+void setRestoreBackupHookForTests(RestoreBackupHook hook);
+using WaitForProcessHook = std::function<bool(QProcess *, int)>;
+void setWaitForProcessHookForTests(WaitForProcessHook hook);
 
 class FileTab : public QWidget {
     Q_OBJECT
@@ -57,7 +67,10 @@ private:
 
     void compress(const QStringList &paths);
     void extract(const QString &archive, bool intoFolder);
-    void runBsdtar(const QStringList &args, const QString &okMessage);
+    QProcess *runBsdtar(const QStringList &args, const QString &okMessage,
+                        QProgressDialog *progress = nullptr, const QString &scratch = QString(),
+                        std::function<bool()> publish = {},
+                        const std::shared_ptr<bool> &keepScratch = {});
 
     QFileSystemModel *m_model;
     ThumbnailProxy *m_proxy;
