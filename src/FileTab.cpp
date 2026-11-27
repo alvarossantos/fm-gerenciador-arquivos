@@ -1,6 +1,7 @@
 #include "FileTab.h"
 #include "ThumbnailProxy.h"
 
+#include <QAction>
 #include <QApplication>
 #include <QClipboard>
 #include <QDateTime>
@@ -478,6 +479,17 @@ void FileTab::setShowHidden(bool show)
     m_model->setFilter(f);
 }
 
+void FileTab::setViewActions(QAction *icons, QAction *preview, QAction *hidden,
+                             QAction *zoomIn, QAction *zoomOut, QAction *zoomReset)
+{
+    m_iconsAct = icons;
+    m_previewAct = preview;
+    m_hiddenAct = hidden;
+    m_zoomInAct = zoomIn;
+    m_zoomOutAct = zoomOut;
+    m_zoomResetAct = zoomReset;
+}
+
 // ---------- seleção / pré-visualização ----------
 
 void FileTab::onSelectionChanged()
@@ -575,6 +587,12 @@ void FileTab::showContextMenu(const QPoint &pos)
     addNewMenu(&menu);
     menu.addSeparator();
 
+    if (sel.isEmpty()) {
+        QMenu *view = menu.addMenu(tr("Exibir"));
+        addViewMenu(view);
+        menu.addSeparator();
+    }
+
     if (!sel.isEmpty()) {
         menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
         menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
@@ -640,6 +658,39 @@ void FileTab::addNewMenu(QMenu *menu)
             tm->addAction(t.fileName(), this, [this, p] { newFromTemplate(p); });
         }
     }
+}
+
+void FileTab::addViewMenu(QMenu *menu)
+{
+    QAction *details = menu->addAction(tr("Lista detalhada"));
+    QAction *grid = menu->addAction(tr("Grade de ícones"));
+    details->setCheckable(true);
+    grid->setCheckable(true);
+    const bool icons = m_iconsAct && m_iconsAct->isChecked();
+    details->setChecked(!icons);
+    grid->setChecked(icons);
+    connect(details, &QAction::triggered, this, [this] {
+        if (m_iconsAct)
+            m_iconsAct->setChecked(false);
+    });
+    connect(grid, &QAction::triggered, this, [this] {
+        if (m_iconsAct)
+            m_iconsAct->setChecked(true);
+    });
+
+    menu->addSeparator();
+    if (m_previewAct)
+        menu->addAction(m_previewAct);
+    if (m_hiddenAct)
+        menu->addAction(m_hiddenAct);
+
+    menu->addSeparator();
+    if (m_zoomInAct)
+        menu->addAction(m_zoomInAct);
+    if (m_zoomOutAct)
+        menu->addAction(m_zoomOutAct);
+    if (m_zoomResetAct)
+        menu->addAction(m_zoomResetAct);
 }
 
 // ---------- operações de arquivo ----------

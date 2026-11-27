@@ -47,6 +47,8 @@ public:
     int zoom() const { return m_zoom; }
     void setPreviewVisible(bool visible);
     void setShowHidden(bool show);
+    void setViewActions(QAction *icons, QAction *preview, QAction *hidden,
+                        QAction *zoomIn, QAction *zoomOut, QAction *zoomReset);
 
 signals:
     void zoomChanged(int percent);
@@ -62,6 +64,7 @@ private:
     void openPath(const QString &path);
     void showContextMenu(const QPoint &pos);
     void addNewMenu(QMenu *menu);
+    void addViewMenu(QMenu *menu);
     void onSelectionChanged();
     void updatePreview();
     void updatePlacesSelection();
@@ -103,4 +106,11 @@ private:
     QSize m_treeIconBase;
     QSize m_gridIconBase;
     QSize m_gridBase;
+
+    QAction *m_iconsAct = nullptr;
+    QAction *m_previewAct = nullptr;
+    QAction *m_hiddenAct = nullptr;
+    QAction *m_zoomInAct = nullptr;
+    QAction *m_zoomOutAct = nullptr;
+    QAction *m_zoomResetAct = nullptr;
 };

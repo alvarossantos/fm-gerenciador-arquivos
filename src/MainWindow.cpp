@@ -180,6 +180,8 @@ FileTab *MainWindow::currentTab() const
 FileTab *MainWindow::addTab(const QString &path)
 {
     auto *tab = new FileTab(path);
+    tab->setViewActions(m_iconsAct, m_previewAct, m_hiddenAct,
+                        m_zoomInAct, m_zoomOutAct, m_zoomResetAct);
     tab->setIconMode(m_iconsAct->isChecked());
     tab->setZoom(currentTab() ? currentTab()->zoom() : 100);
     tab->setShowHidden(m_hiddenAct->isChecked());

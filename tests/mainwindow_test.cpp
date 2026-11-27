@@ -2,19 +2,25 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QListView>
 #include <QMenu>
 #include <QScopeGuard>
+#include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeView>
+
+#include <functional>
 
 #include "FileTab.h"
 #include "MainWindow.h"
@@ -54,6 +60,49 @@ QAction *findAction(QWidget *window, const QString &prefix)
     return nullptr;
 }
 
+QAction *menuAction(QMenu *menu, const QString &text)
+{
+    if (!menu)
+        return nullptr;
+    for (QAction *a : menu->actions())
+        if (a->text() == text)
+            return a;
+    return nullptr;
+}
+
+QStringList viewMenuLabels(QMenu *menu)
+{
+    QStringList labels;
+    if (!menu)
+        return labels;
+    for (QAction *a : menu->actions())
+        labels << (a->isSeparator() ? QStringLiteral("---") : a->text());
+    return labels;
+}
+
+void closePopups()
+{
+    while (QWidget *p = qApp->activePopupWidget())
+        p->close();
+}
+
+bool openEmptyContextMenu(FileTab *tab)
+{
+    auto *view = tab->findChild<QTreeView *>();
+    if (!view)
+        return false;
+    const QPoint vp(5, 400); // área vazia, abaixo dos itens
+    QContextMenuEvent ev(QContextMenuEvent::Mouse, vp, view->viewport()->mapToGlobal(vp));
+    QApplication::sendEvent(view->viewport(), &ev);
+    return true;
+}
+
+bool usesIconMode(const FileTab *tab)
+{
+    auto *stack = tab->findChild<QStackedWidget *>();
+    return stack && qobject_cast<QListView *>(stack->currentWidget()) != nullptr;
+}
+
 } // namespace
 
 class MainWindowTest : public QObject
@@ -76,6 +125,7 @@ private slots:
     void zoomActionsReachActiveTab();
     void zoomActionsApplyToAllTabs();
     void newTabInheritsCurrentZoom();
+    void viewMenuSharesToolbarStateAcrossTabs();
 };
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
@@ -658,6 +708,138 @@ void MainWindowTest::newTabInheritsCurrentZoom()
     QApplication::processEvents();
     QCOMPARE(static_cast<FileTab *>(tabs->widget(0))->zoom(), 150);
     QCOMPARE(second->zoom(), 150);
+}
+
+void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    QCOMPARE(tabs->count(), 1);
+    auto *iconsAct = findAction(&w, QStringLiteral("Visão em ícones"));
+    auto *previewAct = findAction(&w, QStringLiteral("Painel de pré-visualização"));
+    auto *hiddenAct = findAction(&w, QStringLiteral("Mostrar arquivos ocultos"));
+    auto *zoomInAct = findAction(&w, QStringLiteral("Aumentar zoom"));
+    auto *zoomOutAct = findAction(&w, QStringLiteral("Diminuir zoom"));
+    auto *zoomResetAct = findAction(&w, QStringLiteral("Zoom original"));
+    QVERIFY(iconsAct && previewAct && hiddenAct && zoomInAct && zoomOutAct && zoomResetAct);
+    const int windowActions = w.actions().size();
+
+    QAction *newTabAct = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTabAct);
+    newTabAct->trigger();
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 2);
+    QCOMPARE(w.actions().size(), windowActions);
+    auto *firstTab = static_cast<FileTab *>(tabs->widget(0));
+    auto *secondTab = static_cast<FileTab *>(tabs->widget(1));
+    QVERIFY(firstTab && secondTab);
+    QVERIFY(!iconsAct->isChecked());
+    QVERIFY(!usesIconMode(firstTab));
+    QVERIFY(!usesIconMode(secondTab));
+
+    const QStringList expectedLabels{
+        QStringLiteral("Lista detalhada"), QStringLiteral("Grade de ícones"), QStringLiteral("---"),
+        previewAct->text(), hiddenAct->text(), QStringLiteral("---"),
+        zoomInAct->text(), zoomOutAct->text(), zoomResetAct->text()
+    };
+
+    auto captureViewMenu = [](FileTab *tab, const std::function<void(QMenu *, QMenu *)> &inspect) {
+        setContextMenuHookForTests([&inspect](QMenu *menu, const QStringList &) {
+            QTimer::singleShot(0, [] { closePopups(); });
+            QAction *viewAction = menuAction(menu, QStringLiteral("Exibir"));
+            inspect(menu, viewAction ? viewAction->menu() : nullptr);
+        });
+        const auto resetHook = qScopeGuard([] { setContextMenuHookForTests({}); });
+        QVERIFY(openEmptyContextMenu(tab));
+        QApplication::processEvents();
+    };
+
+    iconsAct->trigger(); // estado vindo da barra
+    QVERIFY(iconsAct->isChecked());
+    QVERIFY(usesIconMode(firstTab));
+    QVERIFY(usesIconMode(secondTab));
+
+    QStringList labels;
+    bool localModes = false;
+    bool gridFollowsToolbar = false;
+    bool injectedAreToolbarActions = false;
+    bool noNewWindowActions = false;
+    captureViewMenu(firstTab, [&](QMenu *, QMenu *view) {
+        labels = viewMenuLabels(view);
+        noNewWindowActions = w.actions().size() == windowActions;
+        QAction *details = menuAction(view, QStringLiteral("Lista detalhada"));
+        QAction *grid = menuAction(view, QStringLiteral("Grade de ícones"));
+        localModes = details && grid && details->isCheckable() && grid->isCheckable()
+                     && details->shortcut().isEmpty() && grid->shortcut().isEmpty();
+        gridFollowsToolbar = grid && grid->isChecked() == iconsAct->isChecked();
+        injectedAreToolbarActions =
+            menuAction(view, previewAct->text()) == previewAct
+            && menuAction(view, hiddenAct->text()) == hiddenAct
+            && menuAction(view, zoomInAct->text()) == zoomInAct
+            && menuAction(view, zoomOutAct->text()) == zoomOutAct
+            && menuAction(view, zoomResetAct->text()) == zoomResetAct;
+    });
+    QCOMPARE(labels, expectedLabels);
+    QVERIFY(localModes);
+    QVERIFY(gridFollowsToolbar);
+    QVERIFY(injectedAreToolbarActions);
+    QVERIFY(noNewWindowActions);
+
+    // Ação local do submenu aplica setChecked na ação compartilhada.
+    captureViewMenu(firstTab, [&](QMenu *, QMenu *view) {
+        QAction *details = menuAction(view, QStringLiteral("Lista detalhada"));
+        if (details)
+            details->trigger();
+    });
+    QVERIFY(!iconsAct->isChecked());
+    QVERIFY(!usesIconMode(firstTab));
+    QVERIFY(!usesIconMode(secondTab));
+
+    // Reabrir em outra aba reflete o estado corrente.
+    QStringList labelsSecond;
+    bool detailsChecked = false;
+    bool gridChecked = false;
+    captureViewMenu(secondTab, [&](QMenu *, QMenu *view) {
+        labelsSecond = viewMenuLabels(view);
+        QAction *details = menuAction(view, QStringLiteral("Lista detalhada"));
+        QAction *grid = menuAction(view, QStringLiteral("Grade de ícones"));
+        detailsChecked = details && details->isChecked();
+        gridChecked = grid && grid->isChecked();
+    });
+    QCOMPARE(labelsSecond, expectedLabels);
+    QVERIFY(detailsChecked);
+    QVERIFY(!gridChecked);
+
+    captureViewMenu(secondTab, [&](QMenu *, QMenu *view) {
+        QAction *grid = menuAction(view, QStringLiteral("Grade de ícones"));
+        if (grid)
+            grid->trigger();
+    });
+    QVERIFY(iconsAct->isChecked());
+    QVERIFY(usesIconMode(firstTab));
+    QVERIFY(usesIconMode(secondTab));
+
+    iconsAct->trigger(); // alternância pela barra
+    QVERIFY(!iconsAct->isChecked());
+    QVERIFY(!usesIconMode(firstTab));
+    QVERIFY(!usesIconMode(secondTab));
+    QCOMPARE(w.actions().size(), windowActions);
+
+    bool detailsCheckedAgain = false;
+    captureViewMenu(firstTab, [&](QMenu *, QMenu *view) {
+        QAction *details = menuAction(view, QStringLiteral("Lista detalhada"));
+        detailsCheckedAgain = details && details->isChecked();
+    });
+    QVERIFY(detailsCheckedAgain);
 }
 
 QTEST_MAIN(MainWindowTest)
