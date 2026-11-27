@@ -69,6 +69,10 @@ mostra as mesmas ações de item e não oferece forma de ajustar a visão ali me
   fala com o grupo.
 - Item clicado **fora da seleção**: `clearSelection()`, selecionar só aquele
   item (coluna 0, linhas) e usá-lo como alvo.
+- `customContextMenuRequested` já entrega coordenadas do **viewport**: remover o
+  `viewport()->mapFrom(view, pos)` extra antes de `indexAt()`, em lista e grade.
+  O helper de teste, que hoje compensa essa conversão, é ajustado na mesma
+  mudança. Aceite cobre clique na primeira linha e sobre uma coluna de detalhes.
 - Área vazia: `clearSelection()`; o alvo é `m_path` (pasta atual).
 - As ações capturam `sel` por valor quando o menu é construído, para que o
   alvo não mude se a seleção mudar enquanto o menu está aberto. Para isso,
@@ -108,8 +112,8 @@ devem permanecer os atuais.
 
 - `Lista detalhada` e `Grade de ícones`: ações locais ao submenu, `checkable`,
   sem atalho. A marcação vem de `m_iconsAct->isChecked()`. Escolher um modo
-  chama `m_iconsAct->toggle()` **somente se** o modo atual for diferente — a
-  mesma ação da barra, sem registrar um segundo atalho.
+  aplica diretamente `m_iconsAct->setChecked(modoDesejado)` na ação compartilhada
+  — sem `toggle()` (que inverteria o estado) e sem registrar um segundo atalho.
 - Prévia, Arquivos ocultos, Aumentar zoom, Diminuir zoom, Restaurar zoom: as
   próprias `QAction`s da barra, inseridas diretamente. Separadores antes de
   Prévia e antes do zoom.
@@ -123,19 +127,29 @@ devem permanecer os atuais.
   com `LC_ALL=C` para que o cabeçalho seja estável (`Default application for`,
   `Registered applications`); deduplicar por id `.desktop`, preservar a ordem;
   cada entrada mostra o nome legível do `.desktop` quando disponível.
-- Lançamento: `gio launch <id.desktop> <caminho>` via `QProcess::startDetached`
-  com argumentos separados. `Escolher executável…` usa `QFileDialog` e inicia o
-  binário com o caminho como argumento, sem shell.
+- Resolução do ID: as consultas devolvem um id `.desktop`; resolve-lo para o
+  **caminho absoluto** do arquivo instalado nos diretórios padrão
+  (`~/.local/share/applications`, `/usr/local/share/applications`,
+  `/usr/share/applications`, `XDG_DATA_DIRS`). O caminho é passado ao
+  `gio launch <desktop-abs> <caminho>` como primeiro argumento, com o arquivo
+  logo depois como argumento separado (sem shell).
+- Falhas de lançamento são capturadas e informadas via `statusMessage`.
+  `Escolher executável…` usa `QFileDialog` e inicia o binário com o caminho como
+  argumento, sem shell.
 - Cancelamento do diálogo não inicia nada. Sem associações, o submenu ainda
   oferece `Escolher executável…`.
-- Para testes, um hook de lançamento captura `(comando, argumentos, cwd)` em vez
-  de iniciar processos reais, seguindo o padrão dos hooks já existentes.
+- Aceite usa um `.desktop` temporário real, apontado pela resolução de id, para
+  confirmar que o aplicativo recebe o caminho com espaços e acentos. O hook
+  continua útil para testar cancelamento e montagem dos argumentos.
 
 ### Atualizar e terminal
 
-- `Atualizar`: `QFileSystemModel` não expõe `refresh()` público; a re-leitura é
-  forçada por `setRootPath(m_path)`, com o `rootIndex` do proxy restaurado em
-  seguida. Verificado no Qt 6.12 desta máquina.
+- `Atualizar`: `setRootPath(m_path)` retorna cedo quando o caminho já é a raiz do
+  modelo, então não relê nada. O mecanismo escolhido é recriar o
+  `QFileSystemModel` de origem, religar o `ThumbnailProxy` e reatribuir o modelo
+  às duas visualizações, restaurando `rootIndex`. Pasta atual e histórico não
+  mudam. O teste cria/remove um arquivo sem depender do `QFileSystemWatcher` e
+  confirma a releitura, além da preservação de `currentPath()` e do histórico.
 - Terminal externo: resolver o primeiro disponível entre `x-terminal-emulator`,
   `foot`, `kitty`, `alacritty`, `konsole`, `gnome-terminal`, `xfce4-terminal`;
   nesta máquina `kitty`, `alacritty` e `konsole` estão presentes. Iniciar com
@@ -152,14 +166,15 @@ devem permanecer os atuais.
   mesma ação cria o item dentro dela.
 - Criar por tipo e por modelo gera nome, extensão e conteúdo esperados.
 - `Abrir com…`: arquivo com associações, sem associações, caminho com espaços e
-  acentos e cancelamento sem iniciar aplicativo.
+  acentos (via `.desktop` temporário real) e cancelamento sem iniciar aplicativo.
+- Clique direito na primeira linha e numa coluna de detalhes abre o menu sobre o
+  item correto, na lista e na grade.
 - Escolher `Grade de ícones` pelo menu, voltar à lista pela barra e reabrir
   `Exibir` em outra aba: marcação e barra refletem o mesmo estado.
 - Build Release sem warnings; `ctest` em Debug e Release.
 
 ## O que fica para o builder
 
-- Confirmar o comportamento exato de `QAction::toggle()` no submenu de modo e
-  usar o caminho que não inverte o estado quando o modo já é o desejado.
-- Definir o nome do hook de teste e a forma de simular `xdg-mime`/`gio`.
+- Definir o nome do hook de teste e a forma de simular `xdg-mime`/`gio` sem
+  depender das associações reais da máquina.
 - Ordem final dos separadores e ícones, seguindo o que já existe no menu.
