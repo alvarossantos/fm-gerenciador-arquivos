@@ -536,6 +536,43 @@ bool FileTab::goTo(const QString &path, bool addHistory)
     return true;
 }
 
+void FileTab::refreshModel()
+{
+    auto *oldModel = m_model;
+    auto *oldProxy = m_proxy;
+    auto *oldTreeSelection = m_tree->selectionModel();
+    auto *oldIconsSelection = m_icons->selectionModel();
+
+    auto *model = new QFileSystemModel(this);
+    model->setReadOnly(false);
+    model->setFilter(oldModel->filter());
+    auto *proxy = new ThumbnailProxy(model, this);
+    model->setRootPath(m_path);
+
+    m_model = model;
+    m_proxy = proxy;
+
+    const QModelIndex rootIndex = m_proxy->mapFromSource(m_model->index(m_path));
+    m_tree->setModel(m_proxy);
+    m_icons->setModel(m_proxy);
+    m_icons->setSelectionModel(m_tree->selectionModel());
+    m_tree->setRootIndex(rootIndex);
+    m_icons->setRootIndex(rootIndex);
+
+    connect(m_tree->selectionModel(), &QItemSelectionModel::selectionChanged, this,
+            [this] { onSelectionChanged(); });
+    connect(m_model, &QFileSystemModel::directoryLoaded, this, [this](const QString &dir) {
+        if (dir == m_path && selectedPaths().isEmpty())
+            onSelectionChanged();
+    });
+
+    oldTreeSelection->deleteLater();
+    if (oldIconsSelection != oldTreeSelection)
+        oldIconsSelection->deleteLater();
+    oldProxy->deleteLater();
+    oldModel->deleteLater();
+}
+
 void FileTab::back()
 {
     if (canGoBack())
@@ -714,6 +751,7 @@ void FileTab::showContextMenu(const QPoint &pos)
         QMenu *view = menu.addMenu(tr("Exibir"));
         addViewMenu(view);
         menu.addAction(tr("Abrir terminal aqui"), this, [this] { openTerminal(m_path); });
+        menu.addAction(QIcon::fromTheme("view-refresh"), tr("Atualizar"), this, [this] { refreshModel(); });
         menu.addSeparator();
     }
 

@@ -284,6 +284,7 @@ private slots:
     void terminalUsesTargetDirectory();
     void emptyAreaTerminalUsesCurrentDirectory();
     void propertiesOfCurrentFolder();
+    void refreshRereadsWithoutWatcherAndKeepsHistory();
     void mimeHookResetRestoresAsyncQueries();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
@@ -1101,6 +1102,111 @@ void FileTabTest::propertiesOfCurrentFolder()
     QVERIFY2(seen, "a ação Propriedades da pasta deve abrir o diálogo");
     QVERIFY2(seenText.contains(QStringLiteral("pasta-de-testes")),
              qPrintable(QStringLiteral("texto: %1").arg(seenText)));
+}
+
+void FileTabTest::refreshRereadsWithoutWatcherAndKeepsHistory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    const QString sub = QDir(root).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(sub));
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    QVERIFY(tab.goTo(root));
+    QVERIFY(tab.goTo(sub, true));
+
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QListView *icons = nullptr;
+    for (QListView *candidate : tab.findChildren<QListView *>())
+        if (candidate->viewMode() == QListView::IconMode) { icons = candidate; break; }
+    QVERIFY(icons);
+    QTRY_VERIFY_WITH_TIMEOUT(tree->rootIndex().isValid(), 3000);
+
+    const auto iconHas = [icons](const QString &name) {
+        QAbstractItemModel *m = icons->model();
+        const QModelIndex rootIdx = icons->rootIndex();
+        for (int r = 0; r < m->rowCount(rootIdx); ++r)
+            if (m->data(m->index(r, 0, rootIdx), Qt::DisplayRole).toString() == name)
+                return true;
+        return false;
+    };
+
+    // setRootPath(QString()) desliga o watcher, mas marca o nó de sub como sujo:
+    // a visão faz fetchMore no evento seguinte e reinstala o watcher. Drenamos
+    // esse fetch enquanto o diretório ainda está intacto e só então desligamos
+    // os watchers de vez. Assim a alteração no FS não chega sozinha à visão.
+    const auto freezeWatcher = [&](QFileSystemModel *m) -> bool {
+        m->setRootPath(QString());
+        const QModelIndex subIdx = m->index(sub);
+        if (!subIdx.isValid())
+            return false;
+        bool listed = false;
+        const QMetaObject::Connection conn = connect(m, &QFileSystemModel::directoryLoaded, &tab,
+                                                     [&](const QString &dir) { if (dir == sub) listed = true; });
+        m->fetchMore(subIdx);
+        QElapsedTimer timer;
+        timer.start();
+        while (!listed && timer.elapsed() < 3000)
+            QTest::qWait(10);
+        disconnect(conn);
+        if (!listed)
+            return false;
+        m->setOption(QFileSystemModel::DontWatchForChanges, true);
+        return true;
+    };
+
+    auto *model = tab.findChild<QFileSystemModel *>();
+    QVERIFY(model);
+    QVERIFY2(freezeWatcher(model), "o watcher da pasta precisa ser desligado antes da alteração no FS");
+
+    const QString created = QDir(sub).filePath(QStringLiteral("novo.txt"));
+    {
+        QFile f(created);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("conteudo\n");
+    }
+    QTest::qWait(250);
+    QVERIFY2(!findRowNamed(tree, QStringLiteral("novo.txt")).isValid(),
+             "sem Atualizar o arquivo novo não deve aparecer na lista detalhada");
+    QVERIFY2(!iconHas(QStringLiteral("novo.txt")),
+             "sem Atualizar o arquivo novo não deve aparecer na grade");
+
+    runMenuAction(QStringList{QStringLiteral("Atualizar")});
+    openContextMenu(tree);
+
+    QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(tree, QStringLiteral("novo.txt")).isValid(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(iconHas(QStringLiteral("novo.txt")), 3000);
+    QCOMPARE(tab.currentPath(), QDir::cleanPath(sub));
+    QVERIFY(tab.canGoBack());
+    tab.back();
+    QCOMPARE(tab.currentPath(), QDir::cleanPath(root));
+
+    // Sentido inverso: remove o arquivo com o watcher do modelo atual desligado.
+    tab.forward();
+    QCOMPARE(tab.currentPath(), QDir::cleanPath(sub));
+    auto *proxy = qobject_cast<ThumbnailProxy *>(tree->model());
+    QVERIFY(proxy);
+    auto *currentModel = qobject_cast<QFileSystemModel *>(proxy->sourceModel());
+    QVERIFY(currentModel);
+    QVERIFY2(freezeWatcher(currentModel), "o novo modelo também precisa ter o watcher desligado");
+    QVERIFY(QFile::remove(created));
+    QTest::qWait(250);
+    QVERIFY2(findRowNamed(tree, QStringLiteral("novo.txt")).isValid(),
+             "sem Atualizar o arquivo removido ainda deve constar na lista detalhada");
+    QVERIFY2(iconHas(QStringLiteral("novo.txt")),
+             "sem Atualizar o arquivo removido ainda deve constar na grade");
+
+    runMenuAction(QStringList{QStringLiteral("Atualizar")});
+    openContextMenu(tree);
+
+    QTRY_VERIFY_WITH_TIMEOUT(!findRowNamed(tree, QStringLiteral("novo.txt")).isValid(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!iconHas(QStringLiteral("novo.txt")), 3000);
+    QCOMPARE(tab.currentPath(), QDir::cleanPath(sub));
+    QVERIFY(tab.canGoBack());
 }
 
 void FileTabTest::mimeHookResetRestoresAsyncQueries()

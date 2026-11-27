@@ -46,6 +46,7 @@ public:
     bool canGoForward() const { return m_histIdx < m_history.size() - 1; }
 
     bool goTo(const QString &path, bool addHistory = true);
+    void refreshModel();
     void back();
     void forward();
     void up();
