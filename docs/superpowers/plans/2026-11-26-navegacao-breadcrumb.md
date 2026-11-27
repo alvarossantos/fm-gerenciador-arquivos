@@ -42,12 +42,12 @@
 
 - [ ] **Step 1: Escrever os testes RED**
 
-Em `tests/mainwindow_test.cpp`, incluir `QtTest`, `QApplication`, `QDir`, `QListWidget`, `QTemporaryDir`, `FileTab.h`. Criar `QTemporaryDir`, `QDir(dir).mkpath(...)` para `Documentos/projeto/sub`, `Documentos2`, `Downloads/teste`, e chamar `setPlacesForTests({home, documents, documents2, downloads})` com `QScopeGuard` restaurando `{})`. Usar `findChild<QListWidget*>("places")` e comparar `currentItem()->data(Qt::UserRole)`.
+Em `tests/mainwindow_test.cpp`, incluir `QtTest`, `QApplication`, `QDir`, `QListWidget`, `QTemporaryDir`, `FileTab.h`. Criar `QTemporaryDir`, `QDir(dir).mkpath(...)` para `Documentos/projeto/sub`, `Documentos2`, `Downloads/teste`. Cada caso chama `setPlacesForTests(...)` com `QScopeGuard` restaurando `{})`. Usar `findChild<QListWidget*>("places")` e comparar `currentItem()->data(Qt::UserRole)`.
 
 Casos (nomes exatos):
-- `placesHighlightFollowsGoToBackForward`: `goTo(documents + "/projeto")` → destaque em `Documentos`; `back()` → `home`; `forward()` → `Documentos`; verificar `canGoBack()`/`canGoForward()` a cada passo e `currentPath()` inalterado pela seleção.
+- `placesHighlightFollowsGoToBackForward`: com lugares `{home, documents}`, `goTo(documents + "/projeto")` → destaque em `Documentos`; `back()` → `home`; `forward()` → `Documentos`; verificar `canGoBack()`/`canGoForward()` a cada passo e `currentPath()` inalterado pela seleção.
 - `placesHighlightUsesAncestorRules`: com lugares `{home, documents, documents + "/projeto"}`, `goTo(documents + "/projeto/sub")` → destaque em `projeto` (casa exata/ancestral mais específico); depois `goTo(home + "/outro")` → `Pasta pessoal`; `goTo("/")` → `Raiz (/)`.
-- `placesHighlightRejectsPrefixCollision`: com lugares `{documents, documents2}`, `goTo(documents2)` → destaque em `Documentos2`, nunca em `Documentos`.
+- `placesHighlightRejectsPrefixCollision`: com lugares `{home, documents}` — **sem** `Documentos2` —, `goTo(documents2)` → destaque em `Pasta pessoal`, nunca em `Documentos`. Cadastrar `Documentos2` mascararia o erro de prefixo por casa exata.
 
 - [ ] **Step 2: Rodar e confirmar RED**
 
@@ -60,7 +60,7 @@ Esperado: falha de compilação/link por `setPlacesForTests` e alvo ausente; dep
 
 - [ ] **Step 3: Implementar o mínimo**
 
-Em `FileTab.h/.cpp`: hook global `setPlacesForTests`; no construtor, usar os caminhos do hook quando não vazios, mantendo rótulos (`Pasta pessoal` para home, `Raiz (/)` para `/`, `QFileInfo(path).fileName()` para os demais); `m_places->setObjectName("places")`; mudar `goTo` para `bool` (false nos dois `return` de erro, true nos demais); extrair `updatePlacesSelection()` privado. Regra: `QDir::cleanPath` + `split('/', Qt::SkipEmptyParts)`; casa exata, depois maior número de segmentos iniciais comuns; fallback home; `/` só para `/`. Chamar no fim de `goTo()`, usando `setCurrentItem()` sem navegar.
+Em `FileTab.h/.cpp`: hook global `setPlacesForTests`; no construtor, usar os caminhos do hook quando não vazios, mantendo rótulos (`Pasta pessoal` para home, `Raiz (/)` para `/`, `QFileInfo(path).fileName()` para os demais); `m_places->setObjectName("places")`; mudar `goTo` para `bool` (false nos dois `return` de erro, true nos demais); extrair `updatePlacesSelection()` privado. Regra: `QDir::cleanPath` + `split('/', Qt::SkipEmptyParts)`; **todos** os segmentos do lugar precisam coincidir, em ordem, com o início dos segmentos do caminho atual — nunca prefixo de texto. Casa exata primeiro, depois maior número de segmentos coincidentes; fallback home; `/` só para `/`. Chamar no fim de `goTo()`, usando `setCurrentItem()` sem navegar.
 
 Em `CMakeLists.txt`: criar `mainwindow_test` com `tests/mainwindow_test.cpp src/MainWindow.cpp src/FileTab.cpp src/ThemeManager.cpp src/ThumbnailProxy.cpp`, include `src`, link `Qt6::Widgets Qt6::Test`, `add_test(NAME mainwindow_test ...)`, propriedade `ENVIRONMENT "QT_QPA_PLATFORM=offscreen"`.
 
@@ -90,7 +90,7 @@ git commit -m "test: cobre destaque dos lugares e retorno de goTo"
 
 - `breadcrumbFollowsActiveTab`: abrir `MainWindow` em `documents/projeto`; encontrar `QToolButton` por `objectName`; conferir que o último tem `data(Qt::UserRole) == documents/projeto`. Ativar ação que começa com `Nova aba` e chamar `goTo(downloads/teste)` diretamente no `FileTab` da nova aba; conferir o breadcrumb da nova aba. Trocar `QTabWidget::setCurrentIndex(0)` e conferir, juntos, breadcrumb e destaque do `places` da aba 0; repetir para a aba 1.
 - `breadcrumbClickThenBackUsesActiveTabHistory`: na aba 0, navegar para `documents/projeto/sub`, clicar com `QTest::mouseClick` no botão cujo `data` seja `documents`, acionar a ação `Voltar` e conferir retorno a `documents/projeto/sub`; aba 1 permanece em `downloads/teste`.
-- `overflowMenuKeepsCurrentAndNavigates`: redimensionar para 420x600, criar `home/a/b/c/d/com espaços`, navegar até lá. Para cada ancestral, afirmar que ele está em botão visível ou em ação do menu de `breadcrumbOverflow`; a pasta atual precisa estar em botão visível. Se `/` não couber, afirmar que ele está no menu. Abrir o menu, trigger na ação com `data == documents` e conferir `currentPath()`.
+- `overflowMenuKeepsCurrentAndNavigates`: com lugares `{home, documents}`, redimensionar para 420x600, criar `documents + "/a/b/c/d/com espaços"`, navegar até lá. Para cada ancestral, afirmar que ele está em botão visível ou em ação do menu de `breadcrumbOverflow`; a pasta atual precisa estar em botão visível. Se `/` não couber, afirmar que ele está no menu. Localizar a ação cujo `data() == documents` no menu (confirmando que ela existe), dispará-la e conferir `currentPath() == documents`.
 
 - [ ] **Step 2: Rodar e confirmar RED**
 
@@ -103,7 +103,7 @@ Esperado: FAIL — botões `breadcrumbButton` não existem.
 
 - [ ] **Step 3: Implementar o mínimo**
 
-Em `MainWindow.h`: declarar `void rebuildBreadcrumb()`, `void resizeEvent(QResizeEvent *) override`, membros `QWidget *m_pathBar`, `QToolButton *m_overflow` e manter `m_pathEdit`. Em `MainWindow.cpp`: trocar `tb->addWidget(m_pathEdit)` por `tb->addWidget(m_pathBar)`, com `QHBoxLayout` horizontal; incluir `<QResizeEvent>` e `<QToolButton>`; criar botões com `objectName`, `Qt::ToolButtonTextBesideIcon` não necessário, tooltip com caminho completo e `elideMiddle()` nos rótulos; cada clique chama `currentTab()->goTo(data)`, que entra no histórico da aba ativa. Construir segmentos a partir de `QDir::cleanPath`, começando por `/`. Enquanto a soma das larguras exceder `m_pathBar->width()`, mover segmentos do meio para o menu `…` (primeiro os intermediários; se precisar, a raiz), mantendo sempre o último visível. Ligar `rebuildBreadcrumb()` a `pathChanged`, `currentChanged` e `resizeEvent`.
+Em `MainWindow.h`: declarar `void rebuildBreadcrumb()`, `void resizeEvent(QResizeEvent *) override`, membros `QWidget *m_pathBar`, `QToolButton *m_overflow` e manter `m_pathEdit`. Em `MainWindow.cpp`: trocar `tb->addWidget(m_pathEdit)` por `tb->addWidget(m_pathBar)`, com `QHBoxLayout` horizontal; incluir `<QResizeEvent>` e `<QToolButton>`; criar botões com `objectName` e o destino em `Qt::UserRole`, tooltip com caminho completo e `elideMiddle()` nos rótulos; cada clique chama `currentTab()->goTo(data)`, que entra no histórico da aba ativa. Cada ação do menu `…` usa `QAction::setData(caminho)` e o mesmo handler. Construir segmentos a partir de `QDir::cleanPath`, começando por `/`. Enquanto a soma das larguras exceder `m_pathBar->width()`, mover segmentos do meio para o menu `…` (primeiro os intermediários; se precisar, a raiz), mantendo sempre o último visível. Ligar `rebuildBreadcrumb()` a `pathChanged`, `currentChanged` e `resizeEvent`.
 
 - [ ] **Step 4: Rodar e confirmar GREEN**
 
@@ -130,7 +130,7 @@ git commit -m "feat: breadcrumb clicavel com menu de ancestrais"
 - [ ] **Step 1: Escrever os testes RED**
 
 - `pathEditKeepsInvalidTextAndEscRestores`: em `MainWindow` na home, `Ctrl+L` → campo visível, focado e texto selecionado; `QTest::keyClicks` com caminho existente + `Return` → pasta mudou, campo escondido, breadcrumb atualizado. `Ctrl+L`, digitar `QTemporaryDir` + `/nao-existe-fm`, `Return` → campo segue visível com o texto exato, `currentPath()` e `canGoBack()` inalterados, `QStatusBar::currentMessage()` contém `Pasta inválida`. `Esc` → campo escondido e breadcrumb igual à pasta atual.
-- `tabChangeDiscardsPendingEdit`: abrir duas abas; na aba 0, `Ctrl+L` e digitar caminho da aba 1 sem `Return`; `tabs->setCurrentIndex(1)` → campo escondido e breadcrumb da aba 1; enviar `Return` à janela → `currentPath()` da aba 0 continua o original.
+- `tabChangeDiscardsPendingEdit`: abrir duas abas; na aba 0, `Ctrl+L` e digitar caminho da aba 1 sem `Return`; `tabs->setCurrentIndex(1)` → campo escondido e breadcrumb da aba 1; enviar `Return` à janela → `currentPath()` da aba 0 **e** da aba 1 continuam os originais.
 
 - [ ] **Step 2: Rodar e confirmar RED**
 
@@ -160,27 +160,31 @@ git commit -m "feat: edicao do caminho com Ctrl+L, Enter e Esc"
 
 **Files:** nenhum (verificação e evidência).
 
-- [ ] **Step 1: Suíte completa em Debug**
+- [ ] **Step 1: Suíte completa em Debug, diretório próprio**
 
 ```bash
-cmake --build build -j4 > /tmp/opencode/nav-debug-build.log 2>&1
+DEBUG_DIR=/tmp/opencode/fm-nav-debug
+rm -rf "$DEBUG_DIR"
+cmake -S . -B "$DEBUG_DIR" -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON > /tmp/opencode/nav-debug-config.log 2>&1
+cmake --build "$DEBUG_DIR" -j4 > /tmp/opencode/nav-debug-build.log 2>&1
 grep -c 'warning:' /tmp/opencode/nav-debug-build.log || true
-ctest --test-dir build -V > /tmp/opencode/nav-debug-ctest.log 2>&1
+ctest --test-dir "$DEBUG_DIR" -V > /tmp/opencode/nav-debug-ctest.log 2>&1
 ```
 
-Esperado: `0` warnings, `100% tests passed out of 4`, `filetab_test` 16/16, `theme_manager_test` 9/9, `mainwindow_test` 10/10, `bench_smoke` PASS.
+Se configurar ou compilar falhar, preservar os logs e parar. Esperado: `0` warnings, `100% tests passed out of 4`, `filetab_test` 16/16, `theme_manager_test` 9/9, `mainwindow_test` 10/10, `bench_smoke` PASS.
 
-- [ ] **Step 2: Suíte completa em Release limpo**
+- [ ] **Step 2: Suíte completa em Release, diretório temporário novo**
 
 ```bash
-rm -rf /tmp/opencode/fm-nav-release
-cmake -S . -B /tmp/opencode/fm-nav-release -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON >/dev/null
-cmake --build /tmp/opencode/fm-nav-release -j4 > /tmp/opencode/nav-release-build.log 2>&1
-ctest --test-dir /tmp/opencode/fm-nav-release -V > /tmp/opencode/nav-release-ctest.log 2>&1
-grep -c 'warning:' /tmp/opencode/nav-release-build.log
+RELEASE_DIR="$(mktemp -d /tmp/opencode/fm-nav-release-XXXXXX)"
+echo "release_dir=$RELEASE_DIR"
+cmake -S . -B "$RELEASE_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON > /tmp/opencode/nav-release-config.log 2>&1
+cmake --build "$RELEASE_DIR" -j4 > /tmp/opencode/nav-release-build.log 2>&1
+grep -c 'warning:' /tmp/opencode/nav-release-build.log || true
+ctest --test-dir "$RELEASE_DIR" -V > /tmp/opencode/nav-release-ctest.log 2>&1
 ```
 
-Esperado: `0` warnings e `100% tests passed out of 4`.
+Se configurar ou compilar falhar, preservar os logs e parar. Esperado: `0` warnings e `100% tests passed out of 4`.
 
 - [ ] **Step 3: Revisão do diff e registro**
 
