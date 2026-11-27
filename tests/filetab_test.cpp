@@ -312,6 +312,7 @@ private slots:
     void desktopFileForIdResolvesSubdirectoryId();
     void desktopFileForIdPrefersXdgDataHomeOverDataDirs();
     void desktopFileForIdIgnoresRelativeXdgPaths();
+    void openWithFindsNestedDesktopUsingGioId();
     void gioLaunchPassesAccentedPathToDesktopApp();
     void openWithLaunchFailureReportsStatus();
     void openWithCancelStartsNothing();
@@ -1176,6 +1177,108 @@ void FileTabTest::desktopFileForIdIgnoresRelativeXdgPaths()
     QVERIFY(QDir().mkpath(root));
     FileTab tab(root);
     QCOMPARE(tab.desktopFileForId(QStringLiteral("dup.desktop")), QFileInfo(inHome).absoluteFilePath());
+}
+
+void FileTabTest::openWithFindsNestedDesktopUsingGioId()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString apps = QDir(dir.path()).filePath(QStringLiteral("applications"));
+    const QString nested = QDir(apps).filePath(QStringLiteral("sub/nested.desktop"));
+    QVERIFY(QDir().mkpath(QFileInfo(nested).absolutePath()));
+    {
+        QFile f(nested);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("[Desktop Entry]\nType=Application\nName=Editor Aninhado\nExec=/bin/true %f\nMimeType=text/plain;\n");
+    }
+
+    const int dbExit = QProcess::execute(QStringLiteral("update-desktop-database"), {apps});
+    if (dbExit == -2)
+        QSKIP("update-desktop-database não encontrado no ambiente");
+    if (dbExit != 0)
+        QSKIP("update-desktop-database falhou");
+
+    const auto restoreDataHome = setTestEnv("XDG_DATA_HOME", dir.path().toUtf8());
+
+    QProcess gio;
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("LC_ALL"), QStringLiteral("C"));
+    gio.setProcessEnvironment(env);
+    gio.start(QStringLiteral("gio"), {QStringLiteral("mime"), QStringLiteral("text/plain")});
+    QVERIFY2(gio.waitForFinished(10000), qPrintable(gio.errorString()));
+    QCOMPARE(gio.exitCode(), 0);
+    const QString mimeOut = QString::fromLocal8Bit(gio.readAllStandardOutput());
+    const QString mimeErr = QString::fromLocal8Bit(gio.readAllStandardError());
+
+    // Captura o primeiro id devolvido pelo GIO, sem derivá-lo da transformação da produção.
+    QString capturedId;
+    bool inRegistered = false;
+    for (const QString &line : mimeOut.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QString text = line.trimmed();
+        if (text.startsWith(QStringLiteral("Registered applications:"))) {
+            inRegistered = true;
+            continue;
+        }
+        if (inRegistered && text.startsWith(QStringLiteral("Recommended applications:")))
+            break;
+        if (inRegistered && text.endsWith(QStringLiteral(".desktop"), Qt::CaseInsensitive)) {
+            capturedId = text;
+            break;
+        }
+    }
+    QVERIFY2(!capturedId.isEmpty(),
+             qPrintable(QStringLiteral("gio mime não trouxe nenhum ID .desktop em Registered applications:\n%1\n%2")
+                            .arg(mimeOut, mimeErr)));
+    // Documentação do comportamento observado; a captura acima não depende desta transformação.
+    QCOMPARE(capturedId, QStringLiteral("sub-nested.desktop"));
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    const QString file = QDir(root).filePath(QStringLiteral("notas.txt"));
+    {
+        QFile f(file);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("texto\n");
+    }
+
+    LaunchCall call;
+    bool called = false;
+    setMimeQueryForTests({capturedId});
+    setLaunchHookForTests([&](const QString &program, const QStringList &args, const QString &cwd) {
+        call = {program, args, cwd};
+        called = true;
+        return true;
+    });
+    const auto resetMime = qScopeGuard([] { clearMimeQueryForTestsForTests(); });
+    const auto resetLaunch = qScopeGuard([] { setLaunchHookForTests({}); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) >= 1, 3000);
+    const QModelIndex row = findRowNamed(view, QFileInfo(file).fileName());
+    QVERIFY(row.isValid());
+
+    QStringList labels;
+    setContextMenuHookForTests([&](QMenu *menu, const QStringList &) {
+        labels = collectMenuLabels(menu);
+        QTimer::singleShot(0, [] { closePopups(); });
+    });
+    const auto resetMenuHook = qScopeGuard([] { setContextMenuHookForTests({}); });
+    openContextMenu(view, row);
+    QVERIFY2(labels.contains(QStringLiteral("Abrir com… > Editor Aninhado")),
+             qPrintable(labels.join(QStringLiteral(" | "))));
+
+    setContextMenuHookForTests({});
+    runMenuAction(QStringList{QStringLiteral("Abrir com…"), QStringLiteral("Editor Aninhado")});
+    openContextMenu(view, row);
+    QTRY_VERIFY_WITH_TIMEOUT(called, 3000);
+    const QStringList expectedArgs{QStringLiteral("launch"), nested, file};
+    QCOMPARE(call.program, QStringLiteral("gio"));
+    QCOMPARE(call.args, expectedArgs);
+    QVERIFY(call.cwd.isEmpty());
 }
 
 void FileTabTest::gioLaunchPassesAccentedPathToDesktopApp()

@@ -134,9 +134,12 @@ devem permanecer os atuais.
   (ou `/usr/local/share/applications` e `/usr/share/applications` se não estiver
   definido). Raízes repetidas são ignoradas, preservando a ordem; o primeiro
   arquivo encontrado vence. Valores relativos em `XDG_DATA_HOME`/`XDG_DATA_DIRS`
-  são ignorados, caindo no default correspondente. Um id com subdiretório, como `sub/app.desktop`, é
-  resolvido diretamente em `<raiz>/applications/sub/app.desktop`, sem varredura
-  recursiva — `app.desktop` não casa com esse arquivo. O caminho é passado ao
+  são ignorados, caindo no default correspondente. Um id com subdiretório é
+  resolvido primeiro pelo caminho direto (`sub/app.desktop` →
+  `<raiz>/applications/sub/app.desktop`); se não existir, o resolvedor varre
+  `applications/` recursivamente e compara cada caminho relativo com `/`
+  substituído por `-` contra o id. É assim que o id devolvido pelo GIO para esse
+  arquivo, `sub-app.desktop`, é encontrado. O caminho é passado ao
   `gio launch <desktop-abs> <caminho>` como primeiro argumento, com o arquivo
   logo depois como argumento separado (sem shell).
 - Falhas de lançamento são capturadas e informadas via `statusMessage`.

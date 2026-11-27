@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -270,10 +271,23 @@ QString FileTab::desktopFileForId(const QString &id) const
             ordered << root;
 
     for (const QString &root : ordered) {
-        const QString candidate = QDir(root).absoluteFilePath(
-            QStringLiteral("applications/%1").arg(id));
+        const QString apps = QDir(root).absoluteFilePath(QStringLiteral("applications"));
+        const QString candidate = QDir(apps).absoluteFilePath(id);
         if (QFileInfo::exists(candidate))
             return QFileInfo(candidate).absoluteFilePath();
+
+        // O GIO codifica o "/" dos ids em subdiretórios como "-".
+        if (id.contains(QLatin1Char('-'))) {
+            QDirIterator it(apps, QStringList{QStringLiteral("*.desktop")},
+                            QDir::Files | QDir::Readable, QDirIterator::Subdirectories);
+            while (it.hasNext()) {
+                const QString path = it.next();
+                const QString encoded = QDir(apps).relativeFilePath(path)
+                                            .replace(QLatin1Char('/'), QLatin1Char('-'));
+                if (encoded == id)
+                    return QFileInfo(path).absoluteFilePath();
+            }
+        }
     }
     return QString();
 }
