@@ -3,11 +3,14 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <functional>
+
 class QAbstractItemView;
 class QFileSystemModel;
 class QLabel;
 class QListView;
 class QListWidget;
+class QProgressDialog;
 class QStackedWidget;
 class QTreeView;
 class ThumbnailProxy;
@@ -57,7 +60,9 @@ private:
 
     void compress(const QStringList &paths);
     void extract(const QString &archive, bool intoFolder);
-    void runBsdtar(const QStringList &args, const QString &okMessage);
+    void runBsdtar(const QStringList &args, const QString &okMessage,
+                   QProgressDialog *progress = nullptr, const QString &scratch = QString(),
+                   std::function<bool()> publish = {});
 
     QFileSystemModel *m_model;
     ThumbnailProxy *m_proxy;
