@@ -38,18 +38,51 @@ QAction *actionNamed(QMenu *menu, const QString &text)
     return nullptr;
 }
 
-void acceptNewFileName()
+void acceptName(const QString &name)
 {
     QInputDialog *dlg = nullptr;
     for (QWidget *w : qApp->topLevelWidgets())
         if ((dlg = qobject_cast<QInputDialog *>(w)))
             break;
     if (!dlg) {
-        qWarning("QInputDialog do 'Novo arquivo' não encontrado");
+        qWarning("QInputDialog de nome não encontrado");
         return;
     }
-    dlg->setTextValue(QStringLiteral("manual-test.txt"));
+    dlg->setTextValue(name);
     dlg->accept();
+}
+
+void acceptNewFileName()
+{
+    acceptName(QStringLiteral("manual-test.txt"));
+}
+
+// Rótulos visíveis do menu, com "---" para separadores e caminho "sub > ação"
+// para ações dentro de submenus.
+QStringList collectMenuLabels(QMenu *menu, const QString &prefix = QString())
+{
+    QStringList out;
+    if (!menu)
+        return out;
+    for (QAction *a : menu->actions()) {
+        if (a->isSeparator()) {
+            out << QStringLiteral("---");
+            continue;
+        }
+        const QString label = prefix.isEmpty() ? a->text() : prefix + QStringLiteral(" > ") + a->text();
+        out << label;
+        if (a->menu())
+            out << collectMenuLabels(a->menu(), label);
+    }
+    return out;
+}
+
+QByteArray fileContents(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return f.readAll();
 }
 
 void closePopups()
@@ -198,6 +231,8 @@ private slots:
     void navigationBackForwardUp();
     void thumbnailIsDeliveredForPng();
     void contextMenuCreateCopyPasteRename();
+    void newSubmenuGroupsAndContents();
+    void newFromPersonalTemplate();
     void contextMenuTargetOnFirstRow();
     void contextMenuTargetOnDetailColumn();
     void contextMenuTargetOnIcons();
@@ -309,12 +344,12 @@ void FileTabTest::contextMenuCreateCopyPasteRename()
         return i.isValid();
     };
 
-    // 1) menu de contexto: Novo > Arquivo de texto (.txt), nome manual-test.txt
-    runMenuAction(QStringList{ QStringLiteral("Novo"), QStringLiteral("Arquivo de texto (.txt)") },
+    // 1) menu de contexto: Novo > Texto (.txt), nome manual-test.txt
+    runMenuAction(QStringList{ QStringLiteral("Novo"), QStringLiteral("Texto (.txt)") },
                   {}, acceptNewFileName);
     openContextMenu(view);
     const QString created = QDir(root).filePath(QStringLiteral("manual-test.txt"));
-    QVERIFY2(QFileInfo::exists(created), "menu Novo > Arquivo de texto (.txt) deve criar o arquivo");
+    QVERIFY2(QFileInfo::exists(created), "menu Novo > Texto (.txt) deve criar o arquivo");
     {
         QFile f(created);
         QVERIFY(f.open(QIODevice::WriteOnly));
@@ -362,6 +397,135 @@ void FileTabTest::contextMenuCreateCopyPasteRename()
     QCOMPARE(contents(original), QByteArray("conteudo original\n"));
     QCOMPARE(contents(created), QByteArray("conteudo de teste\n"));
     QCOMPARE(contents(renamed), QByteArray("conteudo de teste\n"));
+}
+
+void FileTabTest::newSubmenuGroupsAndContents()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    const QString tplDir = QDir(dir.path()).filePath(QStringLiteral("templates"));
+    QVERIFY(QDir().mkpath(root));
+    QVERIFY(QDir().mkpath(tplDir));
+    setTemplatesDirForTests(tplDir);
+    const auto resetTemplates = qScopeGuard([] { setTemplatesDirForTests(QString()); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+
+    auto captureNovo = [view]() {
+        QStringList labels;
+        setContextMenuHookForTests([&labels](QMenu *menu, const QStringList &) {
+            QAction *novo = actionNamed(menu, QStringLiteral("Novo"));
+            labels = novo ? collectMenuLabels(novo->menu()) : QStringList();
+            QTimer::singleShot(0, [] { closePopups(); });
+        });
+        const auto resetHook = qScopeGuard([] { setContextMenuHookForTests({}); });
+        openContextMenu(view);
+        return labels;
+    };
+
+    const QStringList base{
+        QStringLiteral("Pasta…"),
+        QStringLiteral("Arquivo vazio…"),
+        QStringLiteral("Texto (.txt)"),
+        QStringLiteral("Markdown (.md)"),
+        QStringLiteral("---"),
+        QStringLiteral("Código e dados"),
+        QStringLiteral("Código e dados > HTML (.html)"),
+        QStringLiteral("Código e dados > JSON (.json)"),
+        QStringLiteral("Código e dados > Script shell (.sh)"),
+        QStringLiteral("Código e dados > Script Python (.py)"),
+    };
+    // Pasta de modelos vazia: a entrada Modelos não deve aparecer.
+    const QStringList emptyLabels = captureNovo();
+    QVERIFY2(emptyLabels == base,
+             qPrintable(QStringLiteral("roteiros: %1").arg(emptyLabels.join(QLatin1String(" | ")))));
+
+    QFile tpl(QDir(tplDir).filePath(QStringLiteral("modelo.txt")));
+    QVERIFY(tpl.open(QIODevice::WriteOnly));
+    tpl.write("modelo\n");
+    tpl.close();
+    const QStringList withTemplate = base + QStringList{ QStringLiteral("---"),
+                                                         QStringLiteral("Modelos"),
+                                                         QStringLiteral("Modelos > modelo.txt") };
+    const QStringList templateLabels = captureNovo();
+    QVERIFY2(templateLabels == withTemplate,
+             qPrintable(QStringLiteral("roteiros: %1").arg(templateLabels.join(QLatin1String(" | ")))));
+
+    auto createViaMenu = [&](const QStringList &labels, const QString &name) {
+        runMenuAction(QStringList{ QStringLiteral("Novo") } + labels, {},
+                      [name] { acceptName(name); });
+        openContextMenu(view);
+    };
+
+    createViaMenu({ QStringLiteral("Pasta…") }, QStringLiteral("pasta-criada"));
+    QVERIFY(QFileInfo(QDir(root).filePath(QStringLiteral("pasta-criada"))).isDir());
+
+    createViaMenu({ QStringLiteral("Arquivo vazio…") }, QStringLiteral("vazio"));
+    QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("vazio"))), QByteArray());
+
+    createViaMenu({ QStringLiteral("Texto (.txt)") }, QStringLiteral("texto.txt"));
+    QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("texto.txt"))), QByteArray());
+
+    createViaMenu({ QStringLiteral("Markdown (.md)") }, QStringLiteral("notas.md"));
+    QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("notas.md"))), QByteArray("# Título\n"));
+
+    createViaMenu({ QStringLiteral("Código e dados"), QStringLiteral("HTML (.html)") },
+                  QStringLiteral("pagina.html"));
+    QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("pagina.html"))),
+             QByteArray("<!DOCTYPE html>\n<html lang=\"pt-BR\">\n<head>\n  <meta charset=\"utf-8\">\n"
+                        "  <title></title>\n</head>\n<body>\n\n</body>\n</html>\n"));
+
+    createViaMenu({ QStringLiteral("Código e dados"), QStringLiteral("JSON (.json)") },
+                  QStringLiteral("dados.json"));
+    QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("dados.json"))), QByteArray("{}\n"));
+
+    const QString shell = QDir(root).filePath(QStringLiteral("script.sh"));
+    createViaMenu({ QStringLiteral("Código e dados"), QStringLiteral("Script shell (.sh)") },
+                  QStringLiteral("script.sh"));
+    QCOMPARE(fileContents(shell), QByteArray("#!/usr/bin/env bash\nset -euo pipefail\n\n"));
+    QVERIFY2(QFileInfo(shell).permissions() & QFile::ExeOwner, "script.sh precisa ser executável");
+
+    createViaMenu({ QStringLiteral("Código e dados"), QStringLiteral("Script Python (.py)") },
+                  QStringLiteral("script.py"));
+    QCOMPARE(fileContents(QDir(root).filePath(QStringLiteral("script.py"))),
+             QByteArray("#!/usr/bin/env python3\n\n"));
+}
+
+void FileTabTest::newFromPersonalTemplate()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    const QString tplDir = QDir(dir.path()).filePath(QStringLiteral("templates"));
+    QVERIFY(QDir().mkpath(root));
+    QVERIFY(QDir().mkpath(tplDir));
+    const QString tplPath = QDir(tplDir).filePath(QStringLiteral("modelo com acento.txt"));
+    {
+        QFile f(tplPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QVERIFY(f.write("conteúdo do modelo\nlinha 2\n") > 0);
+    }
+    setTemplatesDirForTests(tplDir);
+    const auto resetTemplates = qScopeGuard([] { setTemplatesDirForTests(QString()); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+
+    runMenuAction(QStringList{ QStringLiteral("Novo"), QStringLiteral("Modelos"),
+                               QStringLiteral("modelo com acento.txt") });
+    openContextMenu(view);
+
+    const QString created = QDir(root).filePath(QStringLiteral("modelo com acento.txt"));
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(created), 3000);
+    QCOMPARE(fileContents(created), fileContents(tplPath));
 }
 
 void FileTabTest::contextMenuTargetOnFirstRow()

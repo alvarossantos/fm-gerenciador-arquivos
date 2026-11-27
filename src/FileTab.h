@@ -25,6 +25,7 @@ void setRestoreBackupHookForTests(RestoreBackupHook hook);
 using WaitForProcessHook = std::function<bool(QProcess *, int)>;
 void setWaitForProcessHookForTests(WaitForProcessHook hook);
 void setPlacesForTests(const QStringList &paths);
+void setTemplatesDirForTests(const QString &dir);
 using ContextMenuHook = std::function<void(QMenu *, const QStringList &)>;
 void setContextMenuHookForTests(ContextMenuHook hook);
 
@@ -60,6 +61,7 @@ private:
     QString pathOf(const QModelIndex &proxyIndex) const;
     void openPath(const QString &path);
     void showContextMenu(const QPoint &pos);
+    void addNewMenu(QMenu *menu);
     void onSelectionChanged();
     void updatePreview();
     void updatePlacesSelection();

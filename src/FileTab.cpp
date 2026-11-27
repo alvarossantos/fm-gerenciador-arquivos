@@ -109,6 +109,7 @@ QString archiveSuffix(const QString &name)
 RestoreBackupHook restoreBackupHook;
 WaitForProcessHook waitForProcessHook;
 QStringList placesForTests;
+QString templatesDirForTests;
 ContextMenuHook contextMenuHook;
 
 bool waitForProcess(QProcess *proc, int msecs)
@@ -136,6 +137,11 @@ void setWaitForProcessHookForTests(WaitForProcessHook hook)
 void setPlacesForTests(const QStringList &paths)
 {
     placesForTests = paths;
+}
+
+void setTemplatesDirForTests(const QString &dir)
+{
+    templatesDirForTests = dir;
 }
 
 void setContextMenuHookForTests(ContextMenuHook hook)
@@ -566,31 +572,7 @@ void FileTab::showContextMenu(const QPoint &pos)
         menu.addSeparator();
     }
 
-    // --- Novo ---
-    QMenu *nw = menu.addMenu(QIcon::fromTheme("document-new"), tr("Novo"));
-    nw->addAction(QIcon::fromTheme("folder-new"), tr("Pasta…"), this, [this] { newFolder(); });
-    nw->addSeparator();
-    nw->addAction(tr("Arquivo de texto (.txt)"), this, [this] { newFile("novo.txt"); });
-    nw->addAction(tr("Markdown (.md)"), this, [this] { newFile("novo.md", "# Título\n"); });
-    nw->addAction(tr("HTML (.html)"), this, [this] {
-        newFile("index.html", "<!DOCTYPE html>\n<html lang=\"pt-BR\">\n<head>\n  <meta charset=\"utf-8\">\n"
-                              "  <title></title>\n</head>\n<body>\n\n</body>\n</html>\n");
-    });
-    nw->addAction(tr("Script shell (.sh)"), this, [this] { newFile("script.sh", "#!/usr/bin/env bash\nset -euo pipefail\n\n", true); });
-    nw->addAction(tr("Script Python (.py)"), this, [this] { newFile("script.py", "#!/usr/bin/env python3\n\n"); });
-    nw->addAction(tr("JSON (.json)"), this, [this] { newFile("dados.json", "{}\n"); });
-    nw->addAction(tr("Arquivo vazio…"), this, [this] { newFile("arquivo"); });
-
-    const QString tplDir = QStandardPaths::writableLocation(QStandardPaths::TemplatesLocation);
-    const auto tpls = QDir(tplDir).entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::Name);
-    if (!tpls.isEmpty()) {
-        nw->addSeparator();
-        QMenu *tm = nw->addMenu(tr("Modelos"));
-        for (const QFileInfo &t : tpls) {
-            const QString p = t.absoluteFilePath();
-            tm->addAction(t.fileName(), this, [this, p] { newFromTemplate(p); });
-        }
-    }
+    addNewMenu(&menu);
     menu.addSeparator();
 
     if (!sel.isEmpty()) {
@@ -624,6 +606,40 @@ void FileTab::showContextMenu(const QPoint &pos)
     if (contextMenuHook)
         contextMenuHook(&menu, sel);
     menu.exec(v->viewport()->mapToGlobal(pos));
+}
+
+void FileTab::addNewMenu(QMenu *menu)
+{
+    QMenu *nw = menu->addMenu(QIcon::fromTheme("document-new"), tr("Novo"));
+    nw->addAction(QIcon::fromTheme("folder-new"), tr("Pasta…"), this, [this] { newFolder(); });
+    nw->addAction(tr("Arquivo vazio…"), this, [this] { newFile("arquivo"); });
+    nw->addAction(tr("Texto (.txt)"), this, [this] { newFile("novo.txt"); });
+    nw->addAction(tr("Markdown (.md)"), this, [this] { newFile("novo.md", "# Título\n"); });
+    nw->addSeparator();
+
+    QMenu *code = nw->addMenu(tr("Código e dados"));
+    code->addAction(tr("HTML (.html)"), this, [this] {
+        newFile("index.html", "<!DOCTYPE html>\n<html lang=\"pt-BR\">\n<head>\n  <meta charset=\"utf-8\">\n"
+                              "  <title></title>\n</head>\n<body>\n\n</body>\n</html>\n");
+    });
+    code->addAction(tr("JSON (.json)"), this, [this] { newFile("dados.json", "{}\n"); });
+    code->addAction(tr("Script shell (.sh)"), this,
+                    [this] { newFile("script.sh", "#!/usr/bin/env bash\nset -euo pipefail\n\n", true); });
+    code->addAction(tr("Script Python (.py)"), this,
+                    [this] { newFile("script.py", "#!/usr/bin/env python3\n\n"); });
+
+    const QString tplDir = templatesDirForTests.isEmpty()
+                               ? QStandardPaths::writableLocation(QStandardPaths::TemplatesLocation)
+                               : templatesDirForTests;
+    const auto tpls = QDir(tplDir).entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::Name);
+    if (!tpls.isEmpty()) {
+        nw->addSeparator();
+        QMenu *tm = nw->addMenu(tr("Modelos"));
+        for (const QFileInfo &t : tpls) {
+            const QString p = t.absoluteFilePath();
+            tm->addAction(t.fileName(), this, [this, p] { newFromTemplate(p); });
+        }
+    }
 }
 
 // ---------- operações de arquivo ----------
