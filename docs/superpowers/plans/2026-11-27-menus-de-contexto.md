@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Build Release sem warnings; `ctest --test-dir build-release -V` verde (3/3 alvos).
+- Build Release sem warnings; `ctest --test-dir build-release -V` verde (4/4 alvos).
 - `QT_QPA_PLATFORM=offscreen` nos testes; pastas descartáveis (`QTemporaryDir`) para arquivos.
 - Nenhum atalho novo: ações injetadas não entram em `MainWindow::addAction`.
 - `Colar` sempre em `m_path`; alvo de item capturado no momento do menu.
@@ -21,6 +21,7 @@
 
 ## Review Focus
 
+- Cada ação entra no menu na task que a implementa; Task 8 só valida a composição final e a colagem.
 - Clique direito sobre item já selecionado não pode desfazer o grupo — Task 1 testa clipboard com 2 URLs.
 - Item fora da seleção vira único alvo — Task 1 testa o alvo capturado.
 - Ação disparada após mudança de seleção ainda age sobre o alvo do menu — Task 2 testa com `before` trocando a seleção.
@@ -42,7 +43,7 @@
 
 - [ ] **Step 1: Escrever os testes que falham**
 
-Em `tests/filetab_test.cpp`: generalizar `openContextMenu` para `QAbstractItemView *`, calcular `const QPoint vp = index.isValid() ? view->visualRect(index.siblingAtColumn(column)).center() : QPoint(5, 400);`, remover `mapTo(view, vp)` e enviar `QContextMenuEvent` com `vp` direto. Declarar slots: `contextMenuTargetOnFirstRow`, `contextMenuTargetOnDetailColumn`, `contextMenuTargetOnIcons`, `contextMenuPreservesMultiSelection`, `contextMenuOutsideSelectionReplacesTarget`. Padrão comum: `QTemporaryDir`, `FileTab tab(root)`, `tab.show()`, `QTRY_VERIFY_WITH_TIMEOUT(...rowCount > 0, 3000)`, instalar hook com `QScopeGuard` para limpar, abrir menu, guardar `targets` e `QVERIFY` o caminho esperado. Para a grade, `tab.setIconMode(true)` e `tab.findChild<QListView *>()`.
+Em `tests/filetab_test.cpp`: generalizar `openContextMenu` para `QAbstractItemView *`, calcular `const QPoint vp = index.isValid() ? view->visualRect(index.siblingAtColumn(column)).center() : QPoint(5, 400);`, remover `mapTo(view, vp)` e enviar `QContextMenuEvent` com `vp` direto. Declarar slots: `contextMenuTargetOnFirstRow`, `contextMenuTargetOnDetailColumn`, `contextMenuTargetOnIcons`, `contextMenuPreservesMultiSelection`, `contextMenuOutsideSelectionReplacesTarget`. Padrão comum: `QTemporaryDir`, `FileTab tab(root)`, `tab.show()`, `QTRY_VERIFY_WITH_TIMEOUT(...rowCount > 0, 3000)`, instalar hook com `QScopeGuard` para limpar, abrir menu, guardar `targets` e `QVERIFY` o caminho esperado. Para a grade, `tab.setIconMode(true)` e selecionar o `QListView` cujo `viewMode() == QListView::IconMode` — `findChild<QListView *>()` sozinho também encontra o painel de lugares. Ao clicar fora da seleção, usar `selectionModel()->select(i, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows)` explicitamente.
 
 - [ ] **Step 2: Rodar e confirmar falha**
 
@@ -76,7 +77,7 @@ git commit -m "fix: corrige alvo do menu de contexto e adiciona hook de inspecao
 
 - [ ] **Step 1: Escrever os testes que falham**
 
-Adicionar slots `menuActionsUseFrozenTarget` e `copyPathActionsWriteTextToClipboard`. No primeiro: selecionar `origem.txt`, abrir menu, usar `runMenuAction({"Copiar"}, [=]{ selectRow("outro.txt"); })` para trocar a seleção depois de montado o menu; afirmar que `QGuiApplication::clipboard()->mimeData()->urls()` contém só `origem.txt`. No segundo: menu de arquivo → `Copiar caminho`, conferir `mimeData()->text()` igual ao caminho; selecionar dois itens → `Copiar caminhos`, conferir as duas linhas em ordem.
+Adicionar slots `menuActionsUseFrozenTarget` e `copyPathActionsWriteTextToClipboard`. No primeiro: selecionar `origem.txt`, abrir menu, usar `runMenuAction({"Copiar"}, [=]{ selectRow("outro.txt"); })` para trocar a seleção depois de montado o menu; afirmar **primeiro** que a seleção visual mudou (`view->selectionModel()->currentIndex()` aponta para `outro.txt`) e só então que `QGuiApplication::clipboard()->mimeData()->urls()` contém só `origem.txt`. No segundo: menu de arquivo → `Copiar caminho`, conferir `mimeData()->text()` igual ao caminho; selecionar dois itens → `Copiar caminhos`, conferir as duas linhas em ordem.
 
 - [ ] **Step 2: Rodar e confirmar falha**
 
@@ -85,7 +86,7 @@ Expected: FAIL — "ação do menu não encontrada".
 
 - [ ] **Step 3: Implementar**
 
-Refatorar as quatro assinaturas para receber o alvo; nos atalhos (`FileTab.cpp:299-304`) passar `selectedPaths()`; `renameCurrent(path)` localiza o índice via `m_proxy->mapFromSource(m_model->index(path))` e chama `currentView()->edit(...)`. Nos lambdas do menu, capturar `sel`/`first` por valor e passar às funções. `copyPathsToClipboard` cria `QMimeData` com `setText(paths.join(QLatin1Char('\n')))`.
+Refatorar as quatro assinaturas para receber o alvo; nos atalhos (`FileTab.cpp:299-304`) passar `selectedPaths()`; `renameCurrent(path)` localiza o índice via `m_proxy->mapFromSource(m_model->index(path))` e chama `currentView()->edit(...)`. Nos lambdas do menu, capturar `sel`/`first` por valor e passar às funções. `copyPathsToClipboard` cria `QMimeData` com `setText(paths.join(QLatin1Char('\n')))`. Ligar `Copiar caminho` ao menu de arquivo e de pasta e `Copiar caminhos` ao menu de seleção múltipla já nesta task, com `sel`/`first` capturados.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
@@ -153,7 +154,7 @@ Expected: FAIL — submenu ausente.
 
 - [ ] **Step 3: Implementar**
 
-Em `FileTab`, guardar os seis ponteiros e implementar `addViewMenu(QMenu *)`: duas ações `checkable` locais (`Lista detalhada`, `Grade de ícones`) sem atalho, com `setChecked` conforme `m_iconsAct->isChecked()`; `triggered` aplica `m_iconsAct->setChecked(modoDesejado)` (nunca `toggle()`). Inserir as quatro/cinco `QAction`s injetadas diretamente (prévia, ocultos, zoom in/out/reset) com separador antes de prévia e antes do zoom. Em `MainWindow::addTab`, chamar `tab->setViewActions(m_iconsAct, m_previewAct, m_hiddenAct, m_zoomInAct, m_zoomOutAct, m_zoomResetAct)` antes de aplicar os estados.
+Em `FileTab`, guardar os seis ponteiros e implementar `addViewMenu(QMenu *)`: duas ações `checkable` locais (`Lista detalhada`, `Grade de ícones`) sem atalho, com `setChecked` conforme `m_iconsAct->isChecked()`; `triggered` aplica `m_iconsAct->setChecked(modoDesejado)` (nunca `toggle()`). Inserir as quatro/cinco `QAction`s injetadas diretamente (prévia, ocultos, zoom in/out/reset) com separador antes de prévia e antes do zoom. Em `MainWindow::addTab`, chamar `tab->setViewActions(m_iconsAct, m_previewAct, m_hiddenAct, m_zoomInAct, m_zoomOutAct, m_zoomResetAct)` antes de aplicar os estados. Ligar o submenu `Exibir` ao menu da área vazia nesta task; as demais composições só o recebem na Task 8.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
@@ -178,16 +179,20 @@ git commit -m "feat: submenu Exibir reusa acoes da barra sem duplicar atalhos"
 
 - [ ] **Step 1: Escrever os testes que falham**
 
-Adicionar `openWithUsesDesktopPathAndSeparateArgs`: criar `.desktop` temporário com `Name=Editor de Teste`, configurar `setMimeQueryForTests({"tmp.editor.desktop"})` e `setLaunchHookForTests` capturando `(program, args, cwd)` num struct; abrir menu sobre arquivo `arquivo com acento.txt`, disparar `Abrir com… > Editor de Teste`; afirmar `program == "gio"`, `args == {"launch", <caminho absoluto do .desktop>, <caminho do arquivo>}` e `cwd.isEmpty()`. Adicionar `openWithCancelStartsNothing`: `setExecutableChooserForTests([]{ return QString(); })`, disparar `Escolher executável…`, nenhum launch capturado. Adicionar `openWithWithoutAssociationsOffersChooser`: MIME sem ids, submenu contém só `Escolher executável…`.
+Os quatro testes:
+- `openWithUsesDesktopPathAndSeparateArgs`: criar `.desktop` temporário com `Name=Editor de Teste`, configurar `setMimeQueryForTests({"tmp.editor.desktop"})` e `setLaunchHookForTests` capturando `(program, args, cwd)` num struct; abrir menu sobre arquivo `arquivo com acento.txt`, disparar `Abrir com… > Editor de Teste`; afirmar `program == "gio"`, `args == {"launch", <caminho absoluto do .desktop>, <caminho do arquivo>}` e `cwd.isEmpty()`.
+- `gioLaunchPassesAccentedPathToDesktopApp`: sem hook de launch, criar `XDG_DATA_HOME` temporário, `<tmp>/applications/test-editor.desktop` (`Name=Editor Descartável`, `Exec=<tmp>/capture.sh %f`) e `capture.sh` que grava `"$1"` em `<tmp>/recebido.txt`. Usar `qputenv("XDG_DATA_HOME", tmp)` para que `desktopFileForId("test-editor.desktop")` resolva pelo XDG; `setMimeQueryForTests({"test-editor.desktop"})`; disparar a entrada do menu e `QTRY_VERIFY_WITH_TIMEOUT` que `recebido.txt` contém exatamente o caminho com espaços e acentos. Restaurar `XDG_DATA_HOME` com `QScopeGuard`.
+- `openWithLaunchFailureReportsStatus`: `.desktop` com `Exec` apontando para binário inexistente; `QSignalSpy spy(&tab, &FileTab::statusMessage)`; disparar a entrada; `QTRY_VERIFY` que alguma mensagem contém `Falha` — prova que o `exitCode` do `gio launch` foi capturado, não só o `start()`.
+- `openWithCancelStartsNothing` e `openWithWithoutAssociationsOffersChooser`: `setExecutableChooserForTests([]{ return QString(); })` não registra launch; sem ids, submenu contém só `Escolher executável…`.
 
 - [ ] **Step 2: Rodar e confirmar falha**
 
-Run: `cmake --build build -j4 && env QT_QPA_PLATFORM=offscreen ./build/filetab_test openWithUsesDesktopPathAndSeparateArgs openWithCancelStartsNothing openWithWithoutAssociationsOffersChooser -v1`
+Run: `cmake --build build -j4 && env QT_QPA_PLATFORM=offscreen ./build/filetab_test openWithUsesDesktopPathAndSeparateArgs gioLaunchPassesAccentedPathToDesktopApp openWithLaunchFailureReportsStatus openWithCancelStartsNothing openWithWithoutAssociationsOffersChooser -v1`
 Expected: FAIL — submenu/actions ausentes.
 
 - [ ] **Step 3: Implementar**
 
-`addOpenWithMenu`: MIME via `QMimeDatabase().mimeTypeForFile(QFileInfo(path)).name()`; ids = hook se definido, senão `xdg-mime query default <mime>` (primeiro) seguido de `gio mime <mime>` com `LC_ALL=C` (linhas entre `Registered applications:` e `Recommended applications:`); dedup preservando ordem. Cada entrada mostra `Name=` do `.desktop` resolvido, com fallback para o id; ação chama `openWithDesktop(desktopFileForId(id), path)`. Sem ids, ainda oferece `Escolher executável…`, que usa `setExecutableChooserForTests` ou `QFileDialog::getOpenFileName` e chama o hook de launch com o binário e o caminho. `desktopFileForId` aceita id absoluto existente e procura em `~/.local/share/applications`, `/usr/local/share/applications`, `/usr/share/applications` e `$XDG_DATA_DIRS/applications`. `openWithDesktop` chama o hook, ou `QProcess::startDetached("gio", {"launch", desktop, path})`; `false` → `emit statusMessage(tr("Falha ao abrir o arquivo"))`.
+`addOpenWithMenu`: MIME via `QMimeDatabase().mimeTypeForFile(QFileInfo(path)).name()`; criar o submenu já com `Escolher executável…` e disparar as consultas de forma **assíncrona** — `QProcess` filho do `FileTab`, conectado a `finished`, sem `waitForFinished`/`waitForStarted` na thread da UI; um contador espera as duas consultas e preenche o submenu numa única vez, guardado por `QPointer<QMenu>`. ids = hook se definido, senão `xdg-mime query default <mime>` (primeiro) e `gio mime <mime>` com `LC_ALL=C` (linhas entre `Registered applications:` e `Recommended applications:`); dedup preservando ordem. Cada entrada mostra `Name=` do `.desktop` resolvido, com fallback para o id; ação chama `openWithDesktop(desktopFileForId(id), path)`. Sem ids, `Escolher executável…` permanece, usando `setExecutableChooserForTests` ou `QFileDialog::getOpenFileName`. `desktopFileForId` aceita id absoluto existente e procura em `$XDG_DATA_HOME/applications`, `~/.local/share/applications`, `/usr/local/share/applications`, `/usr/share/applications` e `$XDG_DATA_DIRS/applications`. `openWithDesktop` usa o hook de launch ou `QProcess::start("gio", {"launch", desktop, path})` com `finished` conectado: `exitCode() != 0` ou erro de processo → `emit statusMessage(tr("Falha ao abrir o arquivo"))`. Ligar `Abrir com…` ao menu de arquivo nesta task.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
@@ -221,7 +226,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implementar**
 
-`openTerminal(dir)`: primeiro disponível em `x-terminal-emulator`, `foot`, `kitty`, `alacritty`, `konsole`, `gnome-terminal`, `xfce4-terminal`; hook de launch com `(program, {}, dir)` ou `QProcess::startDetached(program, {}, dir)`. No menu de área vazia usar `m_path`; no de pasta, usar o alvo. `Propriedades da pasta` chama `showProperties(m_path)`.
+`openTerminal(dir)`: primeiro disponível em `x-terminal-emulator`, `foot`, `kitty`, `alacritty`, `konsole`, `gnome-terminal`, `xfce4-terminal`; hook de launch com `(program, {}, dir)` ou `QProcess::startDetached(program, {}, dir)`. Ligar `Abrir terminal aqui` ao menu da área vazia com `m_path`, `Abrir terminal nesta pasta` e `Propriedades da pasta` ao menu de pasta nesta task.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
@@ -246,7 +251,7 @@ git commit -m "feat: acoes de terminal e propriedades da pasta"
 
 - [ ] **Step 1: Escrever os testes que falham**
 
-Adicionar `refreshRereadsWithoutWatcherAndKeepsHistory`: criar `root/sub`, `tab.goTo(root)`, `tab.goTo(sub, true)`, criar `sub/novo.txt` **depois** da navegação e sem esperar watcher; disparar `Atualizar` pelo menu da área vazia; `QTRY_VERIFY_WITH_TIMEOUT` que `novo.txt` aparece no modelo; afirmar `tab.currentPath() == sub`, `tab.canGoBack()` verdadeiro e, após `tab.back()`, caminho `root`. Repetir com remoção de arquivo para provar releitura nos dois sentidos.
+Adicionar `refreshRereadsWithoutWatcherAndKeepsHistory`: criar `root/sub`, `tab.goTo(root)`, `tab.goTo(sub, true)`; obter `auto *model = tab.findChild<QFileSystemModel *>()` e chamar `model->setRootPath(QString())` **antes** de qualquer alteração no sistema de arquivos, desligando o watcher da pasta (o modelo é filho de `FileTab`, então `findChild` o alcança). Criar `sub/novo.txt` e afirmar que a visão ainda não mostra o arquivo; disparar `Atualizar` pelo menu da área vazia; `QTRY_VERIFY_WITH_TIMEOUT` que `novo.txt` aparece nas duas visões; afirmar `tab.currentPath() == sub`, `tab.canGoBack()` verdadeiro e, após `tab.back()`, caminho `root`. Repetir com remoção de arquivo para provar releitura nos dois sentidos.
 
 - [ ] **Step 2: Rodar e confirmar falha**
 
@@ -255,7 +260,7 @@ Expected: FAIL — ação ausente.
 
 - [ ] **Step 3: Implementar**
 
-`refreshModel()`: criar novo `QFileSystemModel(this)` com `setReadOnly(false)` e o mesmo filtro; novo `ThumbnailProxy(model, this)`; `setRootPath(m_path)`; `m_tree->setModel(proxy)` e `m_icons->setModel(proxy)`; `m_icons->setSelectionModel(m_tree->selectionModel())`; reconectar `selectionChanged` do novo `m_tree->selectionModel()` para `onSelectionChanged`; reaplicar `rootIndex` mapeado nas duas visões; apagar modelos/proxy antigos via `deleteLater()`. Não chamar `goTo` e não tocar `m_history`/`m_histIdx`.
+`refreshModel()`: criar novo `QFileSystemModel(this)` com `setReadOnly(false)` e o mesmo filtro; atribuir `m_model = novo`; criar novo `ThumbnailProxy(m_model, this)` e atribuir `m_proxy`; `m_model->setRootPath(m_path)`; `m_tree->setModel(m_proxy)` e `m_icons->setModel(m_proxy)`; `m_icons->setSelectionModel(m_tree->selectionModel())`; reconectar `selectionChanged` do novo `m_tree->selectionModel()` para `onSelectionChanged`; reaplicar `rootIndex` mapeado nas duas visões; apagar modelos/proxy antigos via `deleteLater()`. Não chamar `goTo` e não tocar `m_history`/`m_histIdx`. Ligar `Atualizar` ao menu da área vazia nesta task.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
@@ -289,7 +294,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implementar**
 
-Reescrever a montagem de `showContextMenu` com quatro ramos (`sel.isEmpty()`, `one && isDir`, `one`, `sel.size() > 1`), usando `addNewMenu`, `addViewMenu`, `addOpenWithMenu`, `openTerminal`, `refreshModel`, `copyPathsToClipboard` e as ações com alvo explícito. `Nova pasta…` chama `newFolder()`. `Colar` permanece ligado a `paste()` sem parâmetros. Separadores conforme a spec; nenhuma ação duplicada dentro do mesmo menu.
+Reescrever apenas a composição de `showContextMenu` com quatro ramos (`sel.isEmpty()`, `one && isDir`, `one`, `sel.size() > 1`), reaproveitando as ações já ligadas nas tasks anteriores; adicionar o que faltar para fechar a composição exata. `Nova pasta…` chama `newFolder()`. `Colar` permanece ligado a `paste()` sem parâmetros. Separadores conforme a spec; nenhuma ação duplicada dentro do mesmo menu.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
@@ -299,14 +304,14 @@ Run: comando do Step 2; depois suítes completas em Debug e Release:
 cmake --build build -j4 && ctest --test-dir build -V
 cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON && cmake --build build-release -j4 && ctest --test-dir build-release -V
 ```
-Expected: PASS, 3/3 alvos, sem warnings.
+Expected: PASS, 4/4 alvos, sem warnings.
 
 - [ ] **Step 5: Commit e PR**
 
 ```bash
 git add src/FileTab.h src/FileTab.cpp tests/filetab_test.cpp
 git commit -m "feat: menus de contexto por alvo e colagem na pasta da aba"
-gh pr create --fill --body "Closes #6"
+gh pr create --draft --fill --body "Closes #6"
 ```
 
 ### Task 9: Evidência visual na sessão iNiR
@@ -330,4 +335,5 @@ Escrever `docs/superpowers/validation/2026-11-27-menus-de-contexto.md` com os co
 ```bash
 git add docs/superpowers/validation/2026-11-27-menus-de-contexto.md
 git commit -m "docs: evidence visual dos menus de contexto no iNiR"
+gh pr ready
 ```
