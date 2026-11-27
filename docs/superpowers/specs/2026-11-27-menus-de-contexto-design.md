@@ -109,9 +109,10 @@ devem permanecer os atuais.
 ### Abrir com…
 
 - MIME via `QMimeDatabase::mimeTypeForFile(QFileInfo(path)).name()`.
-- Lista: `xdg-mime query default <mime>` (primeiro) e `gio mime <mime>`;
-  deduplicar por id `.desktop`, preservar a ordem; cada entrada mostra o nome
-  legível do `.desktop` quando disponível.
+- Lista: `xdg-mime query default <mime>` (primeiro) e `gio mime <mime>` executado
+  com `LC_ALL=C` para que o cabeçalho seja estável (`Default application for`,
+  `Registered applications`); deduplicar por id `.desktop`, preservar a ordem;
+  cada entrada mostra o nome legível do `.desktop` quando disponível.
 - Lançamento: `gio launch <id.desktop> <caminho>` via `QProcess::startDetached`
   com argumentos separados. `Escolher executável…` usa `QFileDialog` e inicia o
   binário com o caminho como argumento, sem shell.
@@ -122,10 +123,13 @@ devem permanecer os atuais.
 
 ### Atualizar e terminal
 
-- `Atualizar` força a re-leitura do modelo e restaura o `rootIndex`.
+- `Atualizar`: `QFileSystemModel` não expõe `refresh()` público; a re-leitura é
+  forçada por `setRootPath(m_path)`, com o `rootIndex` do proxy restaurado em
+  seguida. Verificado no Qt 6.12 desta máquina.
 - Terminal externo: resolver o primeiro disponível entre `x-terminal-emulator`,
   `foot`, `kitty`, `alacritty`, `konsole`, `gnome-terminal`, `xfce4-terminal`;
-  iniciar com diretório de trabalho igual à pasta do alvo.
+  nesta máquina `kitty`, `alacritty` e `konsole` estão presentes. Iniciar com
+  diretório de trabalho igual à pasta do alvo.
 
 ## Critérios de aceite
 
@@ -143,7 +147,7 @@ devem permanecer os atuais.
 
 ## O que fica para o builder
 
-- Confirmar a API pública do `QFileSystemModel` usada por `Atualizar` e o
-  comportamento exato de `QAction::toggle()` no submenu de modo.
+- Confirmar o comportamento exato de `QAction::toggle()` no submenu de modo e
+  usar o caminho que não inverte o estado quando o modo já é o desejado.
 - Definir o nome do hook de teste e a forma de simular `xdg-mime`/`gio`.
 - Ordem final dos separadores e ícones, seguindo o que já existe no menu.
