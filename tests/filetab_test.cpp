@@ -97,13 +97,11 @@ void runMenuAction(const QStringList &labels, const std::function<void()> &befor
     });
 }
 
-void openContextMenu(QTreeView *view, const QModelIndex &index = QModelIndex())
+void openContextMenu(QAbstractItemView *view, const QModelIndex &index = QModelIndex(), int column = 0)
 {
     // QWidget de viewport recebe o QContextMenuEvent; o QTreeView emite customContextMenuRequested.
-    const QPoint vp = index.isValid() ? view->visualRect(index).center() : QPoint(5, 400);
-    // FileTab converte pos de coordenadas da view para o viewport; informar pos já na view.
-    const QPoint at = view->viewport()->mapTo(view, vp);
-    QContextMenuEvent ev(QContextMenuEvent::Mouse, at, view->viewport()->mapToGlobal(vp));
+    const QPoint vp = index.isValid() ? view->visualRect(index.siblingAtColumn(column)).center() : QPoint(5, 400);
+    QContextMenuEvent ev(QContextMenuEvent::Mouse, vp, view->viewport()->mapToGlobal(vp));
     QApplication::sendEvent(view->viewport(), &ev);
 }
 
@@ -163,6 +161,33 @@ void triggerOnRow(QTreeView *view, const QModelIndex &row, const QString &label)
     openContextMenu(view, row);
 }
 
+QStringList captureContextTargets(FileTab &tab, QAbstractItemView *view, const QModelIndex &index,
+                                 int column = 0)
+{
+    QStringList targets;
+    setContextMenuHookForTests([&targets](QMenu *, const QStringList &paths) {
+        targets = paths;
+        QTimer::singleShot(0, [] { closePopups(); });
+    });
+    const auto cleanup = qScopeGuard([] { setContextMenuHookForTests({}); });
+    openContextMenu(view, index, column);
+    return targets;
+}
+
+QString contextTestRoot(QTemporaryDir &dir)
+{
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QDir().mkpath(root);
+    for (const QString &name : { QStringLiteral("alpha.txt"), QStringLiteral("beta.txt"),
+                                 QStringLiteral("gamma.txt") }) {
+        QFile f(QDir(root).filePath(name));
+        if (!f.open(QIODevice::WriteOnly))
+            return QString();
+        f.write(name.toUtf8());
+    }
+    return root;
+}
+
 } // namespace
 
 class FileTabTest : public QObject
@@ -173,6 +198,11 @@ private slots:
     void navigationBackForwardUp();
     void thumbnailIsDeliveredForPng();
     void contextMenuCreateCopyPasteRename();
+    void contextMenuTargetOnFirstRow();
+    void contextMenuTargetOnDetailColumn();
+    void contextMenuTargetOnIcons();
+    void contextMenuPreservesMultiSelection();
+    void contextMenuOutsideSelectionReplacesTarget();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
     void extractionSuccessPublishesFolder();
@@ -330,6 +360,92 @@ void FileTabTest::contextMenuCreateCopyPasteRename()
     QCOMPARE(contents(original), QByteArray("conteudo original\n"));
     QCOMPARE(contents(created), QByteArray("conteudo de teste\n"));
     QCOMPARE(contents(renamed), QByteArray("conteudo de teste\n"));
+}
+
+void FileTabTest::contextMenuTargetOnFirstRow()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    FileTab tab(root);
+    tab.show();
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) > 0, 3000);
+    const QModelIndex index = findRowNamed(view, QStringLiteral("alpha.txt"));
+    QVERIFY(index.isValid());
+    QCOMPARE(captureContextTargets(tab, view, index), QStringList{QDir(root).filePath("alpha.txt")});
+}
+
+void FileTabTest::contextMenuTargetOnDetailColumn()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    FileTab tab(root);
+    tab.show();
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) > 0, 3000);
+    const QModelIndex index = findRowNamed(view, QStringLiteral("beta.txt"));
+    QVERIFY(index.isValid());
+    QCOMPARE(captureContextTargets(tab, view, index, 1), QStringList{QDir(root).filePath("beta.txt")});
+}
+
+void FileTabTest::contextMenuTargetOnIcons()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    FileTab tab(root);
+    tab.setIconMode(true);
+    tab.show();
+    QListView *view = nullptr;
+    for (QListView *candidate : tab.findChildren<QListView *>())
+        if (candidate->viewMode() == QListView::IconMode) { view = candidate; break; }
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) > 0, 3000);
+    const QModelIndex index = view->model()->index(0, 0, view->rootIndex());
+    const QString expected = view->model()->data(index).toString();
+    QCOMPARE(captureContextTargets(tab, view, index), QStringList{QDir(root).filePath(expected)});
+}
+
+void FileTabTest::contextMenuPreservesMultiSelection()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    FileTab tab(root);
+    tab.show();
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) > 0, 3000);
+    const QModelIndex alpha = findRowNamed(view, QStringLiteral("alpha.txt"));
+    const QModelIndex beta = findRowNamed(view, QStringLiteral("beta.txt"));
+    view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->selectionModel()->select(beta, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    QStringList expected{QDir(root).filePath("alpha.txt"), QDir(root).filePath("beta.txt")};
+    expected.sort();
+    QStringList actual = captureContextTargets(tab, view, beta);
+    actual.sort();
+    QCOMPARE(actual, expected);
+}
+
+void FileTabTest::contextMenuOutsideSelectionReplacesTarget()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = contextTestRoot(dir);
+    FileTab tab(root);
+    tab.show();
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) > 0, 3000);
+    const QModelIndex alpha = findRowNamed(view, QStringLiteral("alpha.txt"));
+    const QModelIndex gamma = findRowNamed(view, QStringLiteral("gamma.txt"));
+    view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->selectionModel()->select(alpha, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    QCOMPARE(captureContextTargets(tab, view, gamma), QStringList{QDir(root).filePath("gamma.txt")});
 }
 
 void FileTabTest::extractionFailureDoesNotPublishFolder()

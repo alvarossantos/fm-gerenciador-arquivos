@@ -12,6 +12,7 @@ class QFileSystemModel;
 class QLabel;
 class QListView;
 class QListWidget;
+class QMenu;
 class QProcess;
 class QProgressDialog;
 class QStackedWidget;
@@ -23,6 +24,8 @@ void setRestoreBackupHookForTests(RestoreBackupHook hook);
 using WaitForProcessHook = std::function<bool(QProcess *, int)>;
 void setWaitForProcessHookForTests(WaitForProcessHook hook);
 void setPlacesForTests(const QStringList &paths);
+using ContextMenuHook = std::function<void(QMenu *, const QStringList &)>;
+void setContextMenuHookForTests(ContextMenuHook hook);
 
 class FileTab : public QWidget {
     Q_OBJECT

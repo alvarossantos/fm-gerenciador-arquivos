@@ -109,6 +109,7 @@ QString archiveSuffix(const QString &name)
 RestoreBackupHook restoreBackupHook;
 WaitForProcessHook waitForProcessHook;
 QStringList placesForTests;
+ContextMenuHook contextMenuHook;
 
 bool waitForProcess(QProcess *proc, int msecs)
 {
@@ -135,6 +136,11 @@ void setWaitForProcessHookForTests(WaitForProcessHook hook)
 void setPlacesForTests(const QStringList &paths)
 {
     placesForTests = paths;
+}
+
+void setContextMenuHookForTests(ContextMenuHook hook)
+{
+    contextMenuHook = std::move(hook);
 }
 
 FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
@@ -535,11 +541,12 @@ void FileTab::updatePreview()
 void FileTab::showContextMenu(const QPoint &pos)
 {
     QAbstractItemView *v = currentView();
-    const QPoint vp = v->viewport()->mapFrom(v, pos);
-    const QModelIndex idx = v->indexAt(vp);
+    const QModelIndex idx = v->indexAt(pos);
     if (idx.isValid()) {
-        if (!v->selectionModel()->isSelected(idx))
+        if (!v->selectionModel()->isSelected(idx)) {
+            v->clearSelection();
             v->setCurrentIndex(idx.siblingAtColumn(0));
+        }
     } else {
         v->clearSelection();
     }
@@ -611,7 +618,9 @@ void FileTab::showContextMenu(const QPoint &pos)
         }
     }
 
-    menu.exec(v->viewport()->mapToGlobal(vp));
+    if (contextMenuHook)
+        contextMenuHook(&menu, sel);
+    menu.exec(v->viewport()->mapToGlobal(pos));
 }
 
 // ---------- operações de arquivo ----------
