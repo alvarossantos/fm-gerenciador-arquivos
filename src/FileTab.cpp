@@ -162,6 +162,19 @@ bool mimeQueryForTestsSet = false;
 ExecutableChooserHook executableChooserHook;
 LaunchHook launchHook;
 
+QString terminalProgram()
+{
+    for (const QString &name : { QStringLiteral("x-terminal-emulator"), QStringLiteral("foot"),
+                                 QStringLiteral("kitty"), QStringLiteral("alacritty"),
+                                 QStringLiteral("konsole"), QStringLiteral("gnome-terminal"),
+                                 QStringLiteral("xfce4-terminal") }) {
+        const QString found = QStandardPaths::findExecutable(name);
+        if (!found.isEmpty())
+            return found;
+    }
+    return QString();
+}
+
 bool waitForProcess(QProcess *proc, int msecs)
 {
     return waitForProcessHook ? waitForProcessHook(proc, msecs) : proc->waitForFinished(msecs);
@@ -684,6 +697,8 @@ void FileTab::showContextMenu(const QPoint &pos)
         menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
         if (oneDir) {
             menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
+            menu.addAction(tr("Abrir terminal nesta pasta"), this, [this, first] { openTerminal(first); });
+            menu.addAction(tr("Propriedades da pasta"), this, [this, first] { showProperties(first); });
         } else {
             QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), tr("Abrir com…"));
             addOpenWithMenu(openWith, first);
@@ -698,6 +713,7 @@ void FileTab::showContextMenu(const QPoint &pos)
     if (sel.isEmpty()) {
         QMenu *view = menu.addMenu(tr("Exibir"));
         addViewMenu(view);
+        menu.addAction(tr("Abrir terminal aqui"), this, [this] { openTerminal(m_path); });
         menu.addSeparator();
     }
 
@@ -1100,6 +1116,22 @@ void FileTab::showProperties(const QString &path)
     t += tr("Dono: %1  Grupo: %2\n").arg(fi.owner(), fi.group());
     t += tr("Permissões: %1").arg(QString::number(static_cast<uint>(fi.permissions()) & 0xFFF, 16));
     QMessageBox::information(this, tr("Propriedades"), t);
+}
+
+void FileTab::openTerminal(const QString &dir)
+{
+    const QString program = terminalProgram();
+    if (program.isEmpty())
+        return;
+
+    if (launchHook) {
+        if (!launchHook(program, QStringList(), dir))
+            emit statusMessage(tr("Falha ao abrir o terminal"));
+        return;
+    }
+
+    if (!QProcess::startDetached(program, QStringList(), dir))
+        emit statusMessage(tr("Falha ao abrir o terminal"));
 }
 
 // ---------- criação de arquivos ----------

@@ -86,6 +86,7 @@ private:
     void deleteSelected(const QStringList &paths);
     void renameCurrent(const QString &path);
     void showProperties(const QString &path);
+    void openTerminal(const QString &dir);
 
     void newFolder();
     void newFile(const QString &suggested, const QString &content = QString(), bool executable = false);

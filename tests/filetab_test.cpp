@@ -13,6 +13,7 @@
 #include <QLineEdit>
 #include <QListView>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -228,6 +229,22 @@ struct LaunchCall {
     QString cwd;
 };
 
+// Executável falso para tornar a escolha do terminal determinística nos testes.
+QString fakeTerminal(const QString &binDir, const QString &name)
+{
+    if (!QDir().mkpath(binDir))
+        return QString();
+    const QString exe = QDir(binDir).filePath(name);
+    QFile f(exe);
+    if (!f.open(QIODevice::WriteOnly))
+        return QString();
+    f.write("#!/bin/sh\nexit 0\n");
+    f.close();
+    if (!QFile::setPermissions(exe, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner))
+        return QString();
+    return exe;
+}
+
 QString writeDesktopFile(const QString &path, const QString &name, const QString &exec)
 {
     QFile f(path);
@@ -264,6 +281,9 @@ private slots:
     void openWithLaunchFailureReportsStatus();
     void openWithCancelStartsNothing();
     void openWithWithoutAssociationsOffersChooser();
+    void terminalUsesTargetDirectory();
+    void emptyAreaTerminalUsesCurrentDirectory();
+    void propertiesOfCurrentFolder();
     void mimeHookResetRestoresAsyncQueries();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
@@ -956,6 +976,131 @@ void FileTabTest::openWithWithoutAssociationsOffersChooser()
     openContextMenu(view, row);
 
     QCOMPARE(labels, QStringList{QStringLiteral("Escolher executável…")});
+}
+
+void FileTabTest::terminalUsesTargetDirectory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString bin = QDir(dir.path()).filePath(QStringLiteral("bin"));
+    const QString terminal = fakeTerminal(bin, QStringLiteral("foot"));
+    QVERIFY2(!terminal.isEmpty(), "terminal falso deve estar executável");
+    const QByteArray oldPath = qgetenv("PATH");
+    qputenv("PATH", QDir(bin).absolutePath().toUtf8());
+    const auto restorePath = qScopeGuard([oldPath] { qputenv("PATH", oldPath); });
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    const QString sub = QDir(root).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(sub));
+
+    LaunchCall call;
+    bool called = false;
+    setLaunchHookForTests([&](const QString &program, const QStringList &args, const QString &cwd) {
+        call = {program, args, cwd};
+        called = true;
+        return true;
+    });
+    const auto resetLaunch = qScopeGuard([] { setLaunchHookForTests({}); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("sub")).isValid(), 3000);
+    const QModelIndex row = findRowNamed(view, QStringLiteral("sub"));
+    QVERIFY(row.isValid());
+
+    runMenuAction(QStringList{QStringLiteral("Abrir terminal nesta pasta")});
+    openContextMenu(view, row);
+
+    QTRY_VERIFY_WITH_TIMEOUT(called, 3000);
+    QCOMPARE(call.program, QFileInfo(terminal).absoluteFilePath());
+    QVERIFY2(call.args.isEmpty(), qPrintable(QStringLiteral("args: %1").arg(call.args.join(QLatin1Char(' ')))));
+    QCOMPARE(call.cwd, sub);
+}
+
+void FileTabTest::emptyAreaTerminalUsesCurrentDirectory()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString bin = QDir(dir.path()).filePath(QStringLiteral("bin"));
+    const QString terminal = fakeTerminal(bin, QStringLiteral("foot"));
+    QVERIFY2(!terminal.isEmpty(), "terminal falso deve estar executável");
+    const QByteArray oldPath = qgetenv("PATH");
+    qputenv("PATH", QDir(bin).absolutePath().toUtf8());
+    const auto restorePath = qScopeGuard([oldPath] { qputenv("PATH", oldPath); });
+
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+
+    LaunchCall call;
+    bool called = false;
+    setLaunchHookForTests([&](const QString &program, const QStringList &args, const QString &cwd) {
+        call = {program, args, cwd};
+        called = true;
+        return true;
+    });
+    const auto resetLaunch = qScopeGuard([] { setLaunchHookForTests({}); });
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QVERIFY2(!view->indexAt(QPoint(5, 400)).isValid(), "o ponto do menu deve estar na área vazia");
+
+    runMenuAction(QStringList{QStringLiteral("Abrir terminal aqui")});
+    openContextMenu(view);
+
+    QTRY_VERIFY_WITH_TIMEOUT(called, 3000);
+    QCOMPARE(call.program, QFileInfo(terminal).absoluteFilePath());
+    QVERIFY2(call.args.isEmpty(), qPrintable(QStringLiteral("args: %1").arg(call.args.join(QLatin1Char(' ')))));
+    QCOMPARE(call.cwd, root);
+}
+
+void FileTabTest::propertiesOfCurrentFolder()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    const QString sub = QDir(root).filePath(QStringLiteral("pasta-de-testes"));
+    QVERIFY(QDir().mkpath(sub));
+
+    FileTab tab(root);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("pasta-de-testes")).isValid(), 3000);
+    const QModelIndex row = findRowNamed(view, QStringLiteral("pasta-de-testes"));
+    QVERIFY(row.isValid());
+
+    bool seen = false;
+    QString seenText;
+    const auto inspect = [&seen, &seenText] {
+        QMessageBox *box = qobject_cast<QMessageBox *>(qApp->activeModalWidget());
+        if (!box) {
+            for (QWidget *w : qApp->topLevelWidgets())
+                if ((box = qobject_cast<QMessageBox *>(w)))
+                    break;
+        }
+        if (!box) {
+            qWarning("QMessageBox de propriedades não encontrado");
+            return;
+        }
+        seen = true;
+        seenText = box->text();
+        QTest::keyClick(box, Qt::Key_Return);
+    };
+
+    runMenuAction(QStringList{QStringLiteral("Propriedades da pasta")},
+                  [inspect] { QTimer::singleShot(0, inspect); });
+    openContextMenu(view, row);
+
+    QVERIFY2(seen, "a ação Propriedades da pasta deve abrir o diálogo");
+    QVERIFY2(seenText.contains(QStringLiteral("pasta-de-testes")),
+             qPrintable(QStringLiteral("texto: %1").arg(seenText)));
 }
 
 void FileTabTest::mimeHookResetRestoresAsyncQueries()
