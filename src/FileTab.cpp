@@ -1,4 +1,5 @@
 #include "FileTab.h"
+#include "PropertiesDialog.h"
 #include "ThumbnailProxy.h"
 
 #include <QAction>
@@ -213,6 +214,7 @@ QStringList mimeIdsForTests;
 bool mimeQueryForTestsSet = false;
 ExecutableChooserHook executableChooserHook;
 LaunchHook launchHook;
+PropertiesDialogHook propertiesDialogHook;
 
 QString terminalProgram()
 {
@@ -284,6 +286,11 @@ void setExecutableChooserForTests(ExecutableChooserHook hook)
 void setLaunchHookForTests(LaunchHook hook)
 {
     launchHook = std::move(hook);
+}
+
+void setPropertiesDialogHookForTests(PropertiesDialogHook hook)
+{
+    propertiesDialogHook = std::move(hook);
 }
 
 QString FileTab::desktopFileForId(const QString &id) const
@@ -1338,20 +1345,10 @@ void FileTab::renameCurrent(const QString &path)
 
 void FileTab::showProperties(const QString &path)
 {
-    const QFileInfo fi(path);
-    const QMimeType mt = QMimeDatabase().mimeTypeForFile(fi);
-    QString t;
-    t += tr("Nome: %1\n").arg(fi.fileName());
-    t += tr("Local: %1\n").arg(fi.absolutePath());
-    t += tr("Tipo: %1 (%2)\n").arg(mt.comment(), mt.name());
-    if (fi.isFile())
-        t += tr("Tamanho: %1\n").arg(QLocale().formattedDataSize(fi.size()));
-    if (fi.isSymLink())
-        t += tr("Aponta para: %1\n").arg(fi.symLinkTarget());
-    t += tr("Modificado: %1\n").arg(QLocale().toString(fi.lastModified(), QLocale::LongFormat));
-    t += tr("Dono: %1  Grupo: %2\n").arg(fi.owner(), fi.group());
-    t += tr("Permissões: %1").arg(QString::number(static_cast<uint>(fi.permissions()) & 0xFFF, 16));
-    QMessageBox::information(this, tr("Propriedades"), t);
+    auto *dialog = new PropertiesDialog(path, m_ui, this);
+    dialog->show();
+    if (propertiesDialogHook)
+        propertiesDialogHook(dialog);
 }
 
 void FileTab::openTerminal(const QString &dir)

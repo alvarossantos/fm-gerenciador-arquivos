@@ -21,6 +21,7 @@ class QProgressDialog;
 class QStackedWidget;
 class QTreeView;
 class DensityDelegate;
+class PropertiesDialog;
 class ThumbnailProxy;
 
 using RestoreBackupHook = std::function<bool(const QString &, const QString &)>;
@@ -37,6 +38,8 @@ using ExecutableChooserHook = std::function<QString()>;
 void setExecutableChooserForTests(ExecutableChooserHook hook);
 using LaunchHook = std::function<bool(const QString &, const QStringList &, const QString &)>;
 void setLaunchHookForTests(LaunchHook hook);
+using PropertiesDialogHook = std::function<void(PropertiesDialog *)>;
+void setPropertiesDialogHookForTests(PropertiesDialogHook hook);
 
 class FileTab : public QWidget {
     Q_OBJECT

@@ -30,6 +30,7 @@
 #include <QTreeView>
 
 #include "FileTab.h"
+#include "PropertiesDialog.h"
 #include "ThumbnailProxy.h"
 #include "UiPreferences.h"
 
@@ -380,6 +381,7 @@ private slots:
     void sectionHeadersAreNotPlaces();
     void menuShortcutsByPreset();
     void menuTargetsUnchanged();
+    void nonModalFromMenu();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -1727,31 +1729,18 @@ void FileTabTest::propertiesOfCurrentFolder()
     QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("pasta-de-testes")).isValid(), 3000);
     QVERIFY(tab.goTo(sub));
 
-    bool seen = false;
-    QString seenText;
-    const auto inspect = [&seen, &seenText] {
-        QMessageBox *box = qobject_cast<QMessageBox *>(qApp->activeModalWidget());
-        if (!box) {
-            for (QWidget *w : qApp->topLevelWidgets())
-                if ((box = qobject_cast<QMessageBox *>(w)))
-                    break;
-        }
-        if (!box) {
-            qWarning("QMessageBox de propriedades não encontrado");
-            return;
-        }
-        seen = true;
-        seenText = box->text();
-        QTest::keyClick(box, Qt::Key_Return);
-    };
+    QPointer<PropertiesDialog> dialog;
+    setPropertiesDialogHookForTests([&dialog](PropertiesDialog *d) { dialog = d; });
+    const auto reset = qScopeGuard([] { setPropertiesDialogHookForTests({}); });
 
-    runMenuAction(QStringList{QStringLiteral("Propriedades da pasta")},
-                  [inspect] { QTimer::singleShot(0, inspect); });
+    runMenuAction(QStringList{QStringLiteral("Propriedades da pasta")});
     openContextMenu(view);
 
-    QVERIFY2(seen, "a ação Propriedades da pasta deve abrir o diálogo");
-    QVERIFY2(seenText.contains(QStringLiteral("pasta-de-testes")),
-             qPrintable(QStringLiteral("texto: %1").arg(seenText)));
+    QVERIFY2(dialog, "a ação Propriedades da pasta deve abrir o diálogo");
+    QCOMPARE(dialog->path(), QDir::cleanPath(sub));
+    QVERIFY2(dialog->windowTitle().contains(QStringLiteral("pasta-de-testes")),
+             qPrintable(dialog->windowTitle()));
+    dialog->close();
 }
 
 void FileTabTest::refreshRereadsWithoutWatcherAndKeepsHistory()
@@ -2684,6 +2673,49 @@ void FileTabTest::menuTargetsUnchanged()
             QCOMPARE(snap.pasteData, QDir::cleanPath(tab.currentPath()));
         }
     }
+}
+
+void FileTabTest::nonModalFromMenu()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString file = QDir(dir.path()).filePath(QStringLiteral("alvo.txt"));
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.close();
+
+    FileTab tab(dir.path());
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Compact));
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) >= 1, 3000);
+    const QModelIndex row = findRowNamed(view, QStringLiteral("alvo.txt"));
+    QVERIFY(row.isValid());
+    view->selectionModel()->select(row, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->setFocus();
+
+    QPointer<PropertiesDialog> dialog;
+    setPropertiesDialogHookForTests([&dialog](PropertiesDialog *d) { dialog = d; });
+    const auto reset = qScopeGuard([] { setPropertiesDialogHookForTests({}); });
+    QGuiApplication::clipboard()->setText(QStringLiteral("sentinela"));
+
+    runMenuAction(QStringList{QStringLiteral("Propriedades")});
+    openContextMenu(view, row);
+    QVERIFY(dialog);
+    QVERIFY(dialog->isVisible());
+    QVERIFY(!dialog->isModal());
+    QVERIFY(!QApplication::activeModalWidget());
+
+    closePopups();
+    QApplication::setActiveWindow(&tab);
+    tab.setFocus();
+    QTest::keyClick(&tab, Qt::Key_C, Qt::ControlModifier);
+    const QMimeData *md = QGuiApplication::clipboard()->mimeData();
+    QVERIFY2(md && md->hasUrls(), "Ctrl+C deve copiar com o diálogo aberto");
+    QCOMPARE(md->urls().value(0).toLocalFile(), QDir::cleanPath(file));
+    dialog->close();
 }
 
 QTEST_MAIN(FileTabTest)
