@@ -106,7 +106,19 @@ QString archiveSuffix(const QString &name)
     return QString();
 }
 
+RestoreBackupHook restoreBackupHook;
+
+bool restoreBackup(const QString &backup, const QString &dst)
+{
+    return restoreBackupHook ? restoreBackupHook(backup, dst) : QFile::rename(backup, dst);
+}
+
 } // namespace
+
+void setRestoreBackupHookForTests(RestoreBackupHook hook)
+{
+    restoreBackupHook = std::move(hook);
+}
 
 FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
 {
@@ -685,16 +697,16 @@ void FileTab::newFromTemplate(const QString &templatePath)
 
 // ---------- compactação / descompactação (libarchive via bsdtar) ----------
 
-void FileTab::runBsdtar(const QStringList &args, const QString &okMessage,
-                        QProgressDialog *progress, const QString &scratch,
-                        std::function<bool()> publish)
+QProcess *FileTab::runBsdtar(const QStringList &args, const QString &okMessage,
+                             QProgressDialog *progress, const QString &scratch,
+                             std::function<bool()> publish, const std::shared_ptr<bool> &keepScratch)
 {
     auto *p = new QProcess(this);
     const QPointer<FileTab> self = this;
     const QPointer<QProgressDialog> dlg = progress;
     const auto canceled = std::make_shared<bool>(false);
-    const auto cleanup = [scratch] {
-        if (!scratch.isEmpty())
+    const auto cleanup = [scratch, keepScratch] {
+        if (!scratch.isEmpty() && !(keepScratch && *keepScratch))
             QDir(scratch).removeRecursively();
     };
     const auto finishUi = [p, dlg] {
@@ -717,7 +729,7 @@ void FileTab::runBsdtar(const QStringList &args, const QString &okMessage,
         }
     });
     connect(p, &QProcess::finished, this,
-            [self, p, canceled, okMessage, publish, cleanup, finishUi](int code, QProcess::ExitStatus st) {
+            [self, p, canceled, okMessage, publish, cleanup, finishUi, keepScratch](int code, QProcess::ExitStatus st) {
                 if (*canceled) {
                     if (self)
                         emit self->statusMessage(tr("Extração cancelada"));
@@ -725,7 +737,7 @@ void FileTab::runBsdtar(const QStringList &args, const QString &okMessage,
                     if (!publish || publish()) {
                         if (self)
                             emit self->statusMessage(okMessage);
-                    } else if (self) {
+                    } else if (self && !(keepScratch && *keepScratch)) {
                         emit self->statusMessage(tr("Não foi possível publicar a extração"));
                     }
                 } else if (self) {
@@ -743,6 +755,7 @@ void FileTab::runBsdtar(const QStringList &args, const QString &okMessage,
         });
     }
     p->start(QStringLiteral("bsdtar"), args);
+    return p;
 }
 
 void FileTab::compress(const QStringList &paths)
@@ -788,9 +801,8 @@ void FileTab::extract(const QString &archive, bool intoFolder)
     }
     tmp.setAutoRemove(false);
     const QString scratch = tmp.path();
-    auto *lifetimeGuard = new QObject(this);
-    connect(this, &QObject::destroyed, lifetimeGuard,
-            [scratch] { QDir(scratch).removeRecursively(); });
+    auto keepScratch = std::make_shared<bool>(false);
+    const QPointer<FileTab> self = this;
 
     auto *progress = new QProgressDialog(this);
     progress->setWindowTitle(tr("Extrair"));
@@ -808,7 +820,7 @@ void FileTab::extract(const QString &archive, bool intoFolder)
             return !QFileInfo::exists(dest) && QDir().rename(scratch, dest);
         };
     } else {
-        publish = [destDir, scratch] {
+        publish = [self, destDir, scratch, keepScratch] {
             const auto entries = QDir(scratch).entryInfoList(
                 QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
             QList<QPair<QString, QString>> moved;
@@ -834,14 +846,38 @@ void FileTab::extract(const QString &archive, bool intoFolder)
             if (!ok) {
                 for (int i = moved.size() - 1; i >= 0; --i)
                     QFile::rename(moved.at(i).second, moved.at(i).first);
-                for (int i = backedUp.size() - 1; i >= 0; --i)
-                    QFile::rename(backedUp.at(i).first, backedUp.at(i).second);
+                bool restoredAll = true;
+                QString failedBackup;
+                for (int i = backedUp.size() - 1; i >= 0; --i) {
+                    const QString backup = backedUp.at(i).first;
+                    if (!restoreBackup(backup, backedUp.at(i).second)) {
+                        restoredAll = false;
+                        if (failedBackup.isEmpty())
+                            failedBackup = backup;
+                    }
+                }
+                if (!restoredAll) {
+                    *keepScratch = true;
+                    if (self)
+                        emit self->statusMessage(tr("Não foi possível restaurar o original; cópia mantida em %1")
+                                                     .arg(failedBackup));
+                }
             }
             return ok;
         };
     }
 
     // bsdtar, por padrão, recusa caminhos absolutos e “..” (proteção contra zip-slip).
-    runBsdtar({"-x", "-f", archive, "-C", scratch}, tr("Extraído em %1").arg(dest),
-              progress, scratch, publish);
+    QProcess *proc = runBsdtar({"-x", "-f", archive, "-C", scratch}, tr("Extraído em %1").arg(dest),
+                               progress, scratch, publish, keepScratch);
+    const QPointer<QProcess> procGuard = proc;
+    auto *lifetimeGuard = new QObject(this);
+    connect(this, &QObject::destroyed, lifetimeGuard, [procGuard, scratch, keepScratch] {
+        if (procGuard && procGuard->state() != QProcess::NotRunning) {
+            procGuard->kill();
+            procGuard->waitForFinished(2000);
+        }
+        if (!(keepScratch && *keepScratch))
+            QDir(scratch).removeRecursively();
+    });
 }

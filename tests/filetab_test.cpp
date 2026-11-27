@@ -7,6 +7,7 @@
 #include <QDir>
 #include <QFileSystemModel>
 #include <QImage>
+#include <QElapsedTimer>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QProgressDialog>
@@ -124,6 +125,7 @@ void installFakeBsdtar(const QString &dir, const QString &mode)
         "  fail) echo erro-simulado >&2; exit 1 ;;\n"
         "  slow) exec sleep 30 ;;\n"
         "  later) sleep 1; exit 0 ;;\n"
+        "  shortslow) sleep 3; exit 0 ;;\n"
         "  two) exit 0 ;;\n"
         "esac\n").arg(mode);
     f.write(script.toUtf8());
@@ -175,6 +177,8 @@ private slots:
     void extractHereRollsBackWhenPublishFails();
     void extractHereUsesOriginalDestination();
     void extractHereCancelRemovesTemporaryFolder();
+    void extractHereKeepsBackupWhenRestoreFails();
+    void closingTabStopsExtractionBeforeCleanup();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -610,6 +614,97 @@ void FileTabTest::extractHereCancelRemovesTemporaryFolder()
     QVERIFY2(!QFileInfo::exists(QDir(root).filePath(QStringLiteral("parcial.txt"))),
              "cancelamento em Extrair aqui não deve publicar arquivo");
     QVERIFY(scratchDirs(root).isEmpty());
+}
+
+void FileTabTest::extractHereKeepsBackupWhenRestoreFails()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    const QString archive = QDir(root).filePath(QStringLiteral("arquivo.zip"));
+    { QFile f(archive); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("fake"); }
+    const QString original = QDir(root).filePath(QStringLiteral("a.txt"));
+    { QFile f(original); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("original\n"); }
+    const QString blocking = QDir(root).filePath(QStringLiteral("b.txt"));
+    QVERIFY(QDir().mkpath(blocking));
+    { QFile f(QDir(blocking).filePath(QStringLiteral("filho.txt")));
+      QVERIFY(f.open(QIODevice::WriteOnly)); f.write("original-b\n"); }
+    QVERIFY(QFile::setPermissions(blocking, QFile::ReadOwner | QFile::ExeOwner | QFile::ReadGroup
+                                  | QFile::ExeGroup | QFile::ReadOther | QFile::ExeOther));
+    QScopeGuard restorePerms([blocking] {
+        QFile::setPermissions(blocking, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner
+                              | QFile::ReadGroup | QFile::WriteGroup | QFile::ExeGroup
+                              | QFile::ReadOther | QFile::WriteOther | QFile::ExeOther);
+    });
+    setRestoreBackupHookForTests([](const QString &, const QString &) { return false; });
+    QScopeGuard clearHook([] { setRestoreBackupHookForTests({}); });
+
+    const QString bin = QDir(dir.path()).filePath(QStringLiteral("bin"));
+    installFakeBsdtar(bin, QStringLiteral("two"));
+    const QByteArray oldPath = qgetenv("PATH");
+    qputenv("PATH", bin.toUtf8() + QByteArray(":") + oldPath);
+    QScopeGuard restorePath([oldPath] { qputenv("PATH", oldPath); });
+
+    QStringList statuses;
+    FileTab tab(root);
+    QObject::connect(&tab, &FileTab::statusMessage, &tab,
+                     [&statuses](const QString &s) { statuses.append(s); });
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("arquivo.zip")).isValid(), 3000);
+    triggerOnRow(view, findRowNamed(view, QStringLiteral("arquivo.zip")), QStringLiteral("Extrair aqui"));
+    QTRY_VERIFY_WITH_TIMEOUT(statuses.contains(
+                                 QStringLiteral("Não foi possível restaurar o original; cópia mantida em %1")
+                                     .arg(QDir(QDir(root).filePath(
+                                                   scratchDirs(root).isEmpty() ? QString() : scratchDirs(root).first()))
+                                              .filePath(QStringLiteral(".fm-backup-a.txt")))), 5000);
+    QVERIFY2(!QFileInfo::exists(original), "original não restaurado não deve parecer publicado");
+    const QStringList scratch = scratchDirs(root);
+    QCOMPARE(scratch.size(), 1);
+    const QString scratchDir = QDir(root).filePath(scratch.first());
+    const QStringList backups = QDir(scratchDir).entryList(QDir::Files | QDir::Hidden, QDir::Name);
+    QString backupPath;
+    for (const QString &name : backups)
+        if (name.startsWith(QStringLiteral(".fm-backup-")))
+            backupPath = QDir(scratchDir).filePath(name);
+    QVERIFY2(!backupPath.isEmpty(), "backup do original deve ser preservado");
+    QFile f(backupPath);
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    QCOMPARE(f.readAll(), QByteArray("original\n"));
+}
+
+void FileTabTest::closingTabStopsExtractionBeforeCleanup()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
+    QVERIFY(QDir().mkpath(root));
+    const QString archive = QDir(root).filePath(QStringLiteral("arquivo.zip"));
+    { QFile f(archive); QVERIFY(f.open(QIODevice::WriteOnly)); f.write("fake"); }
+
+    const QString bin = QDir(dir.path()).filePath(QStringLiteral("bin"));
+    installFakeBsdtar(bin, QStringLiteral("shortslow"));
+    const QByteArray oldPath = qgetenv("PATH");
+    qputenv("PATH", bin.toUtf8() + QByteArray(":") + oldPath);
+    QScopeGuard restorePath([oldPath] { qputenv("PATH", oldPath); });
+
+    auto *tab = new FileTab(root);
+    tab->show();
+    QVERIFY(QTest::qWaitForWindowExposed(tab));
+    auto *view = tab->findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("arquivo.zip")).isValid(), 3000);
+
+    triggerOnRow(view, findRowNamed(view, QStringLiteral("arquivo.zip")), QStringLiteral("Extrair aqui"));
+    QTRY_VERIFY_WITH_TIMEOUT(!scratchDirs(root).isEmpty(), 3000);
+    QElapsedTimer elapsed;
+    elapsed.start();
+    delete tab;
+    QVERIFY2(elapsed.elapsed() < 2500, "fechar a aba deve interromper o processo, não esperar 3 s");
+    QTRY_VERIFY_WITH_TIMEOUT(scratchDirs(root).isEmpty(), 3000);
 }
 
 QTEST_MAIN(FileTabTest)

@@ -59,19 +59,23 @@ operação, que é justamente o problema relatado.
   para a pasta capturada no início da extração (`destDir`), não para a pasta
   atual no fim. Destino existente é movido para backup dentro do temp antes
   de ser sobrescrito; se qualquer entrada falhar, as publicações e os backups
-  já feitos são revertidos — nunca fica estado parcial.
+  já feitos são revertidos — nunca fica estado parcial. Se a restauração de um
+  backup falhar, o temporário é preservado e o caminho da cópia é informado no
+  status; um hook injetável força essa falha no teste.
 - `runBsdtar()` recebe opcionalmente o diálogo, o temporário e um callback de
   publicação; sem eles, comporta-se como hoje (compactação intacta).
 - Testes: casos em `filetab_test.cpp` com `bsdtar` falso no `PATH`, cobrindo
   falha, cancelamento, sucesso, rollback de publicação parcial, troca de pasta
-  durante a extração e cancelamento em `Extrair aqui`.
+  durante a extração, cancelamento em `Extrair aqui`, preservação do backup
+  quando a restauração falha e fechamento da aba com extração em andamento.
 
 ## Pendente para o implementador
 
 - `QProgressDialog::cancel()` só marca `wasCanceled()`; o sinal `canceled()`
   vem do clique no botão. O teste clica no botão.
 - Diálogo é filho do `FileTab` e o processo é protegido por `QPointer` para
-  evitar uso após destruição da aba; o scratch tem guarda de limpeza ligada a
-  `destroyed`.
+  evitar uso após destruição da aba; a guarda ligada a `destroyed` mata e espera
+  o término do `QProcess` antes de remover o scratch (respeitando a preservação
+  do backup).
 - Registrar no relatório da branch o que foi automatizado e o que exigiria
   validação manual no desktop.
