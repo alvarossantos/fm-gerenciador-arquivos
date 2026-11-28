@@ -1,6 +1,8 @@
 #include <QtTest>
 
+#include <QAbstractItemModel>
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
@@ -11,6 +13,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QListWidget>
 #include <QKeySequence>
@@ -128,6 +131,45 @@ bool usesIconMode(const FileTab *tab)
     return stack && qobject_cast<QListView *>(stack->currentWidget()) != nullptr;
 }
 
+QStringList viewItemNames(QAbstractItemView *view)
+{
+    QStringList names;
+    if (!view || !view->model())
+        return names;
+    QAbstractItemModel *model = view->model();
+    const QModelIndex root = view->rootIndex();
+    for (int row = 0; row < model->rowCount(root); ++row)
+        names << model->data(model->index(row, 0, root), Qt::DisplayRole).toString();
+    return names;
+}
+
+QListView *iconViewOf(FileTab *tab)
+{
+    for (QListView *candidate : tab->findChildren<QListView *>())
+        if (candidate->viewMode() == QListView::IconMode)
+            return candidate;
+    return nullptr;
+}
+
+bool triggerRefreshAction(FileTab *tab)
+{
+    bool triggered = false;
+    setContextMenuHookForTests([&triggered](QMenu *menu, const QStringList &) {
+        QTimer::singleShot(0, [] { closePopups(); });
+        for (QAction *action : menu->actions()) {
+            if (action->objectName() != QStringLiteral("refreshAction"))
+                continue;
+            triggered = true;
+            action->trigger();
+            break;
+        }
+    });
+    const auto resetHook = qScopeGuard([] { setContextMenuHookForTests({}); });
+    const bool opened = openEmptyContextMenu(tab);
+    QApplication::processEvents();
+    return opened && triggered;
+}
+
 QToolBar *toolbar(QWidget *window)
 {
     return window->findChild<QToolBar *>();
@@ -217,6 +259,7 @@ private slots:
     void keyboardOpensMenusAt320InEveryPreset();
     void tabsMenuUsesFullPathForDuplicates();
     void localDialogsHaveReadableText();
+    void sortIsPerTabAndSurvivesRefresh();
 };
 
 void MainWindowTest::shortcutActionsHaveReadableLabels()
@@ -1588,6 +1631,215 @@ void MainWindowTest::localDialogsHaveReadableText()
     QVERIFY2(shortcutsText.contains(QStringLiteral("Ctrl+W")), "Ctrl+W ausente nos atalhos");
     QVERIFY2(!dialogText(help).isEmpty(), "Ajuda sem texto");
     QVERIFY2(!dialogText(about).isEmpty(), "Sobre o fm sem texto");
+}
+
+void MainWindowTest::sortIsPerTabAndSurvivesRefresh()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString dir1 = QDir(root.path()).filePath(QStringLiteral("um"));
+    const QString dir2 = QDir(root.path()).filePath(QStringLiteral("dois"));
+    QVERIFY(QDir().mkpath(dir1));
+    QVERIFY(QDir().mkpath(dir2));
+
+    const QStringList aba1Base{QStringLiteral("a1.txt"), QStringLiteral("b1.txt"),
+                               QStringLiteral("c1.txt")};
+    const QStringList aba2Base{QStringLiteral("a2.txt"), QStringLiteral("b2.txt"),
+                               QStringLiteral("c2.txt")};
+    const auto writeFile = [](const QString &path, const QString &name) {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
+        file.write(name.toUtf8());
+        file.close();
+        return true;
+    };
+    for (const QString &name : aba1Base)
+        QVERIFY(writeFile(QDir(dir1).filePath(name), name));
+    for (const QString &name : aba2Base)
+        QVERIFY(writeFile(QDir(dir2).filePath(name), name));
+
+    MainWindow w(dir1);
+    w.show();
+    QApplication::processEvents();
+
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *tab1 = static_cast<FileTab *>(tabs->widget(0));
+    QVERIFY(tab1);
+    QAction *newTab = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTab);
+    newTab->trigger();
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 2);
+    auto *tab2 = static_cast<FileTab *>(tabs->widget(1));
+    QVERIFY(tab2 && tab2->goTo(dir2));
+    QApplication::processEvents();
+
+    struct SortSpec {
+        const char *objectName;
+        const char *text;
+        QAction *action;
+    };
+    SortSpec specs[]{
+        {"sortNameAsc", "Nome (A–Z)", nullptr},
+        {"sortNameDesc", "Nome (Z–A)", nullptr},
+        {"sortDateNewest", "Modificação (mais recente)", nullptr},
+        {"sortDateOldest", "Modificação (mais antiga)", nullptr},
+        {"sortSizeDesc", "Tamanho (maior)", nullptr},
+        {"sortSizeAsc", "Tamanho (menor)", nullptr},
+        {"sortTypeAsc", "Tipo (A–Z)", nullptr},
+        {"sortTypeDesc", "Tipo (Z–A)", nullptr},
+    };
+    for (SortSpec &spec : specs) {
+        spec.action = w.findChild<QAction *>(QString::fromUtf8(spec.objectName));
+        QVERIFY2(spec.action,
+                 qPrintable(QStringLiteral("ação de ordenação ausente: ")
+                            + QString::fromUtf8(spec.objectName)));
+        QCOMPARE(spec.action->text(), QString::fromUtf8(spec.text));
+        QVERIFY(spec.action->isCheckable());
+        QVERIFY(spec.action->shortcut().isEmpty());
+        QVERIFY(spec.action->actionGroup());
+        QVERIFY(spec.action->actionGroup()->isExclusive());
+        QCOMPARE(spec.action->actionGroup(), specs[0].action->actionGroup());
+    }
+    const auto checkedSortCount = [&specs] {
+        int count = 0;
+        for (const SortSpec &spec : specs)
+            if (spec.action->isChecked())
+                ++count;
+        return count;
+    };
+    const QStringList sortLabels{QStringLiteral("---"),
+                                 QString::fromUtf8(specs[0].text),
+                                 QString::fromUtf8(specs[1].text),
+                                 QString::fromUtf8(specs[2].text),
+                                 QString::fromUtf8(specs[3].text),
+                                 QString::fromUtf8(specs[4].text),
+                                 QString::fromUtf8(specs[5].text),
+                                 QString::fromUtf8(specs[6].text),
+                                 QString::fromUtf8(specs[7].text)};
+    auto *viewMenu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    QVERIFY(viewMenu);
+    const QStringList labels = viewMenuLabels(viewMenu);
+    QCOMPARE(labels.mid(2, sortLabels.size()), sortLabels);
+    QCOMPARE(labels.value(2 + sortLabels.size()), QStringLiteral("---"));
+
+    QAction *nameAsc = specs[0].action;
+    QAction *nameDesc = specs[1].action;
+    QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
+    QAction *grid = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
+    QVERIFY(list && grid);
+
+    auto *tree1 = tab1->findChild<QTreeView *>();
+    auto *tree2 = tab2->findChild<QTreeView *>();
+    QListView *icons1 = iconViewOf(tab1);
+    QListView *icons2 = iconViewOf(tab2);
+    QVERIFY(tree1 && tree2 && icons1 && icons2);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1).size() == aba1Base.size(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(icons1).size() == aba1Base.size(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree2).size() == aba2Base.size(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(icons2).size() == aba2Base.size(), 3000);
+
+    const QStringList aba1Desc{QStringLiteral("c1.txt"), QStringLiteral("b1.txt"),
+                               QStringLiteral("a1.txt")};
+    const auto checkBothViews = [](QTreeView *tree, QListView *icons, const QStringList &expected) {
+        QCOMPARE(viewItemNames(tree), expected);
+        QCOMPARE(viewItemNames(icons), expected);
+    };
+
+    tabs->setCurrentIndex(0); // a nova aba fica ativa ao ser criada
+    QApplication::processEvents();
+
+    // Padrão: coluna 0, ascendente, com a marcação correspondente na aba ativa.
+    QCOMPARE(tab1->sortColumn(), 0);
+    QCOMPARE(tab1->sortOrder(), Qt::AscendingOrder);
+    QVERIFY(nameAsc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+    checkBothViews(tree1, icons1, aba1Base);
+
+    nameDesc->trigger();
+    QCOMPARE(tab1->sortColumn(), 0);
+    QCOMPARE(tab1->sortOrder(), Qt::DescendingOrder);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1Desc, 3000);
+    checkBothViews(tree1, icons1, aba1Desc);
+    QVERIFY(nameDesc->isChecked() && !nameAsc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+
+    // A aba 2 mantém a própria ordem e a própria marcação.
+    tabs->setCurrentIndex(1);
+    QApplication::processEvents();
+    QCOMPARE(tab2->sortColumn(), 0);
+    QCOMPARE(tab2->sortOrder(), Qt::AscendingOrder);
+    QVERIFY(nameAsc->isChecked() && !nameDesc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+    checkBothViews(tree2, icons2, aba2Base);
+    checkBothViews(tree1, icons1, aba1Desc);
+
+    grid->trigger();
+    QApplication::processEvents();
+    QVERIFY(usesIconMode(tab2));
+    checkBothViews(tree2, icons2, aba2Base);
+
+    // Atualizar precisa mudar a sequência observada: z2.txt entra na lista.
+    list->trigger();
+    QApplication::processEvents();
+    QVERIFY(!usesIconMode(tab2));
+    const QStringList aba2ComZ{QStringLiteral("a2.txt"), QStringLiteral("b2.txt"),
+                               QStringLiteral("c2.txt"), QStringLiteral("z2.txt")};
+    QVERIFY(writeFile(QDir(dir2).filePath(QStringLiteral("z2.txt")), QStringLiteral("z2.txt")));
+    QVERIFY(triggerRefreshAction(tab2));
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree2) == aba2ComZ, 3000);
+    checkBothViews(tree2, icons2, aba2ComZ);
+    QVERIFY(nameAsc->isChecked());
+    QVERIFY(QFile::remove(QDir(dir2).filePath(QStringLiteral("z2.txt"))));
+    QVERIFY(triggerRefreshAction(tab2));
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree2) == aba2Base, 3000);
+    checkBothViews(tree2, icons2, aba2Base);
+
+    // Voltar à aba 1 recupera desc e alterna Lista/Grade sem perder a ordem.
+    tabs->setCurrentIndex(0);
+    QApplication::processEvents();
+    QVERIFY(nameDesc->isChecked() && !nameAsc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+    checkBothViews(tree1, icons1, aba1Desc);
+    checkBothViews(tree2, icons2, aba2Base);
+    grid->trigger();
+    QApplication::processEvents();
+    QVERIFY(usesIconMode(tab1));
+    checkBothViews(tree1, icons1, aba1Desc);
+    list->trigger();
+    QApplication::processEvents();
+    QVERIFY(!usesIconMode(tab1));
+    checkBothViews(tree1, icons1, aba1Desc);
+
+    const QStringList aba1DescComZ{QStringLiteral("z1.txt"), QStringLiteral("c1.txt"),
+                                   QStringLiteral("b1.txt"), QStringLiteral("a1.txt")};
+    QVERIFY(writeFile(QDir(dir1).filePath(QStringLiteral("z1.txt")), QStringLiteral("z1.txt")));
+    QVERIFY(triggerRefreshAction(tab1));
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1DescComZ, 3000);
+    checkBothViews(tree1, icons1, aba1DescComZ);
+    QVERIFY(nameDesc->isChecked());
+    QVERIFY(QFile::remove(QDir(dir1).filePath(QStringLiteral("z1.txt"))));
+    QVERIFY(triggerRefreshAction(tab1));
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1Desc, 3000);
+    checkBothViews(tree1, icons1, aba1Desc);
+
+    // Clique no cabeçalho da coluna 0 inverte para ascendente e synca o menu.
+    QHeaderView *header = tree1->header();
+    QVERIFY(header);
+    const QPoint headerPoint(header->sectionPosition(0) + header->sectionSize(0) / 2,
+                             header->viewport()->height() / 2);
+    QTest::mouseClick(header->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), headerPoint);
+    QApplication::processEvents();
+    QCOMPARE(tab1->sortColumn(), 0);
+    QCOMPARE(tab1->sortOrder(), Qt::AscendingOrder);
+    QVERIFY(nameAsc->isChecked() && !nameDesc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1Base, 3000);
+    checkBothViews(tree1, icons1, aba1Base);
+    checkBothViews(tree2, icons2, aba2Base);
 }
 
 QTEST_MAIN(MainWindowTest)

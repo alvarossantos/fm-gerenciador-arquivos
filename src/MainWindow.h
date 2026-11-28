@@ -39,6 +39,7 @@ private:
     void syncTabBarVisibility();
     void syncToolbar();
     void syncToolbarActions();
+    void syncSortActions();
     void navigateBreadcrumb(const QString &path);
     void rebuildBreadcrumb();
     void beginPathEdit();
@@ -59,6 +60,9 @@ private:
     QAction *m_back, *m_forward, *m_up;
     QAction *m_listAct, *m_iconsAct, *m_previewAct, *m_hiddenAct;
     QActionGroup *m_viewModeGroup;
+    static constexpr int SortActionCount = 8;
+    QAction *m_sortActions[SortActionCount] = {};
+    QActionGroup *m_sortGroup = nullptr;
     QAction *m_zoomInAct, *m_zoomOutAct, *m_zoomResetAct;
     QAction *m_newTabAct = nullptr;
     QAction *m_moreAct = nullptr;

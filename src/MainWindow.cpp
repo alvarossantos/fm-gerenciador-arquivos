@@ -26,6 +26,7 @@
 #include <QResizeEvent>
 #include <QSettings>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTabBar>
@@ -42,6 +43,24 @@ QString elideMiddle(const QString &text, int maxWidth)
 {
     return QFontMetrics(QApplication::font()).elidedText(text, Qt::ElideMiddle, maxWidth);
 }
+
+struct SortActionSpec {
+    const char *objectName;
+    const char *label;
+    int column;
+    Qt::SortOrder order;
+};
+
+constexpr SortActionSpec kSortActions[] = {
+    {"sortNameAsc", QT_TR_NOOP("Nome (A–Z)"), 0, Qt::AscendingOrder},
+    {"sortNameDesc", QT_TR_NOOP("Nome (Z–A)"), 0, Qt::DescendingOrder},
+    {"sortDateNewest", QT_TR_NOOP("Modificação (mais recente)"), 3, Qt::DescendingOrder},
+    {"sortDateOldest", QT_TR_NOOP("Modificação (mais antiga)"), 3, Qt::AscendingOrder},
+    {"sortSizeDesc", QT_TR_NOOP("Tamanho (maior)"), 1, Qt::DescendingOrder},
+    {"sortSizeAsc", QT_TR_NOOP("Tamanho (menor)"), 1, Qt::AscendingOrder},
+    {"sortTypeAsc", QT_TR_NOOP("Tipo (A–Z)"), 2, Qt::AscendingOrder},
+    {"sortTypeDesc", QT_TR_NOOP("Tipo (Z–A)"), 2, Qt::DescendingOrder},
+};
 
 } // namespace
 
@@ -205,6 +224,24 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_viewMenu->addAction(m_listAct);
     m_viewMenu->addAction(m_iconsAct);
     m_viewMenu->addSeparator();
+    m_sortGroup = new QActionGroup(this);
+    m_sortGroup->setExclusive(true);
+    for (int i = 0; i < SortActionCount; ++i) {
+        const SortActionSpec &spec = kSortActions[i];
+        QAction *action = new QAction(tr(spec.label), this);
+        action->setObjectName(QString::fromUtf8(spec.objectName));
+        action->setCheckable(true);
+        m_sortGroup->addAction(action);
+        m_sortActions[i] = action;
+        m_viewMenu->addAction(action);
+        const int column = spec.column;
+        const Qt::SortOrder order = spec.order;
+        connect(action, &QAction::triggered, this, [this, column, order] {
+            if (FileTab *tab = currentTab())
+                tab->setSort(column, order);
+        });
+    }
+    m_viewMenu->addSeparator();
     m_viewMenu->addAction(m_hiddenAct);
     m_viewMenu->addAction(m_previewAct);
     m_viewMenu->addSeparator();
@@ -293,6 +330,7 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     connect(escEdit, &QShortcut::activated, this, &MainWindow::endPathEdit);
     connect(m_tabs, &QTabWidget::tabCloseRequested, this, &MainWindow::closeTab);
     connect(m_tabs, &QTabWidget::currentChanged, this, [this] { endPathEdit(); });
+    connect(m_tabs, &QTabWidget::currentChanged, this, &MainWindow::syncSortActions);
 
     // "Nova aba" abre na pasta da aba atual
     connect(m_newTabAct, &QAction::triggered, this, [this] {
@@ -356,8 +394,10 @@ FileTab *MainWindow::addTab(const QString &path)
             statusBar()->showMessage(m);
     });
     connect(tab, &FileTab::openInNewTab, this, [this](const QString &p) { addTab(p); });
+    connect(tab, &FileTab::sortChanged, this, &MainWindow::syncSortActions);
 
     syncToolbar();
+    syncSortActions();
     rebuildBreadcrumb();
     syncTabBarVisibility();
     return tab;
@@ -430,6 +470,25 @@ void MainWindow::syncToolbarActions()
             if (!menu->actions().contains(rule.action))
                 menu->addAction(rule.action);
         }
+    }
+}
+
+void MainWindow::syncSortActions()
+{
+    const FileTab *tab = currentTab();
+    if (!tab)
+        return;
+
+    for (int i = 0; i < SortActionCount; ++i) {
+        QAction *action = m_sortActions[i];
+        if (!action)
+            continue;
+        const bool checked = kSortActions[i].column == tab->sortColumn()
+                             && kSortActions[i].order == tab->sortOrder();
+        if (action->isChecked() == checked)
+            continue;
+        const QSignalBlocker blocked(action);
+        action->setChecked(checked);
     }
 }
 
