@@ -254,6 +254,7 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_viewMenu->addAction(m_zoomOutAct);
     m_viewMenu->addAction(m_zoomInAct);
     m_viewMenu->addAction(m_zoomResetAct);
+    m_viewMenu->addSeparator();
     m_viewMenu->addAction(m_gridSizeAct);
     m_viewMenu->addAction(m_gridDateAct);
 
@@ -811,7 +812,8 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
             if (event->type() == QEvent::KeyPress) {
                 auto *button = static_cast<QToolButton *>(watched);
-                button->menu()->popup(button->mapToGlobal(QPoint(0, button->height())));
+                if (!button->menu()->isVisible())
+                    button->menu()->popup(button->mapToGlobal(QPoint(0, button->height())));
             }
             return true;
         }

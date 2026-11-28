@@ -125,6 +125,8 @@ public:
         painter->save();
         QRect legendRect = option.rect;
         legendRect.setTop(legendRect.bottom() + 1 - lines * QFontMetrics(option.font).height());
+        if (option.state & QStyle::State_Selected)
+            painter->fillRect(legendRect, option.palette.color(QPalette::Highlight));
         painter->setFont(option.font);
         painter->setPen(option.palette.color(option.state & QStyle::State_Selected
                                                  ? QPalette::HighlightedText : QPalette::Text));
@@ -893,6 +895,9 @@ void FileTab::setGridLegends(bool size, bool date)
     m_gridDateLegend = date;
     m_gridLegendDelegate->setLegends(size, date);
     setZoom(m_zoom);
+    // A altura da célula pode não mudar (ex.: true/false → false/true),
+    // mas o texto da legenda muda: garanta o repaint do viewport.
+    m_icons->viewport()->update();
 }
 
 void FileTab::setPreviewVisible(bool visible)

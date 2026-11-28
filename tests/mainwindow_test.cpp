@@ -11,11 +11,13 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QListWidget>
 #include <QKeySequence>
 #include <QPushButton>
@@ -27,6 +29,7 @@
 #include <QPoint>
 #include <QScopeGuard>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
@@ -295,6 +298,7 @@ private slots:
     void zoomActionsReachActiveTab();
     void zoomActionsApplyToAllTabs();
     void newTabInheritsCurrentZoom();
+    void viewMenuSeparatesZoomFromGridLegends();
     void shortcutActionsHaveReadableLabels();
     void viewModeSwitchesBothWaysFromToolbarAndContextMenu();
     void viewMenuSharesToolbarStateAcrossTabs();
@@ -308,6 +312,7 @@ private slots:
     void customizeActionOpensDialog();
     void customizeDialogPersistsManualAdjustments();
     void keyboardOpensMenusAt320InEveryPreset();
+    void returnKeysDoNotReopenVisibleMenus();
     void tabsMenuUsesFullPathForDuplicates();
     void localDialogsHaveReadableText();
     void sortIsPerTabAndSurvivesRefresh();
@@ -963,6 +968,30 @@ void MainWindowTest::newTabInheritsCurrentZoom()
     QCOMPARE(second->zoom(), 150);
 }
 
+void MainWindowTest::viewMenuSeparatesZoomFromGridLegends()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    auto *menu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    QVERIFY(menu);
+    auto *zoomOut = findAction(&w, QStringLiteral("Diminuir zoom"));
+    auto *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
+    auto *zoomReset = findAction(&w, QStringLiteral("Zoom original"));
+    auto *size = findAction(&w, QStringLiteral("Mostrar tamanho na grade"));
+    auto *date = findAction(&w, QStringLiteral("Mostrar data na grade"));
+    QVERIFY(zoomOut && zoomIn && zoomReset && size && date);
+
+    const QStringList labels = viewMenuLabels(menu);
+    const QStringList expectedTail{zoomOut->text(), zoomIn->text(), zoomReset->text(),
+                                   QStringLiteral("---"), size->text(), date->text()};
+    QVERIFY(labels.size() >= expectedTail.size());
+    QCOMPARE(labels.mid(labels.size() - expectedTail.size()), expectedTail);
+}
+
 void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
 {
     QTemporaryDir root;
@@ -1529,6 +1558,60 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
     QVERIFY(!header->isSectionHidden(3));
 }
 
+void MainWindowTest::returnKeysDoNotReopenVisibleMenus()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+    auto *files = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
+    auto *view = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
+    QVERIFY(files && files->menu() && view && view->menu());
+
+    const auto pressReturn = [](QToolButton *button) {
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::KeyboardModifiers());
+        QApplication::sendEvent(button, &press);
+    };
+
+    for (QToolButton *button : {files, view}) {
+        QMenu *menu = button->menu();
+        menu->close();
+        closePopups();
+        QApplication::processEvents();
+
+        QSignalSpy aboutToShow(menu, &QMenu::aboutToShow);
+        pressReturn(button);
+        QVERIFY2(menu->isVisible(), "Return não abriu o menu");
+        QCOMPARE(aboutToShow.count(), 1);
+        QList<QAction *> enabled;
+        for (QAction *a : menu->actions())
+            if (!a->isSeparator() && a->isEnabled())
+                enabled << a;
+        QVERIFY(enabled.size() >= 2);
+        QAction *chosen = enabled.last(); // não é o primeiro: popup() reinicia nele
+
+        menu->setActiveAction(chosen);
+        QCOMPARE(menu->activeAction(), chosen);
+
+        pressReturn(button);
+        QApplication::processEvents();
+        QVERIFY2(menu->isVisible(), "Return fechou o menu já visível");
+        QVERIFY2(aboutToShow.count() == 1,
+                 "Return reabriu o menu já visível (aboutToShow repetido)");
+        QVERIFY2(menu->activeAction() == chosen,
+                 "Return reiniciou a navegação do menu");
+
+        menu->close();
+        closePopups();
+        QApplication::processEvents();
+    }
+}
+
 void MainWindowTest::keyboardOpensMenusAt320InEveryPreset()
 {
     TempConfig config;
@@ -1953,12 +2036,18 @@ void MainWindowTest::sortIsPerTabAndSurvivesRefresh()
     const QStringList aba2ComZ{QStringLiteral("a2.txt"), QStringLiteral("b2.txt"),
                                QStringLiteral("c2.txt"), QStringLiteral("z2.txt")};
     QVERIFY(writeFile(QDir(dir2).filePath(QStringLiteral("z2.txt")), QStringLiteral("z2.txt")));
+    QAbstractItemModel *beforeRefresh = tree2->model();
     QVERIFY(triggerRefreshAction(tab2));
+    QVERIFY2(tree2->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
     QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree2) == aba2ComZ, 3000);
     checkBothViews(tree2, icons2, aba2ComZ);
     QVERIFY(nameAsc->isChecked());
     QVERIFY(QFile::remove(QDir(dir2).filePath(QStringLiteral("z2.txt"))));
+    beforeRefresh = tree2->model();
     QVERIFY(triggerRefreshAction(tab2));
+    QVERIFY2(tree2->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
     QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree2) == aba2Base, 3000);
     checkBothViews(tree2, icons2, aba2Base);
 
@@ -1981,12 +2070,18 @@ void MainWindowTest::sortIsPerTabAndSurvivesRefresh()
     const QStringList aba1DescComZ{QStringLiteral("z1.txt"), QStringLiteral("c1.txt"),
                                    QStringLiteral("b1.txt"), QStringLiteral("a1.txt")};
     QVERIFY(writeFile(QDir(dir1).filePath(QStringLiteral("z1.txt")), QStringLiteral("z1.txt")));
+    beforeRefresh = tree1->model();
     QVERIFY(triggerRefreshAction(tab1));
+    QVERIFY2(tree1->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
     QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1DescComZ, 3000);
     checkBothViews(tree1, icons1, aba1DescComZ);
     QVERIFY(nameDesc->isChecked());
     QVERIFY(QFile::remove(QDir(dir1).filePath(QStringLiteral("z1.txt"))));
+    beforeRefresh = tree1->model();
     QVERIFY(triggerRefreshAction(tab1));
+    QVERIFY2(tree1->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
     QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1Desc, 3000);
     checkBothViews(tree1, icons1, aba1Desc);
 

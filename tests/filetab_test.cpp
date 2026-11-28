@@ -5,7 +5,9 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QColor>
 #include <QDir>
+#include <QEvent>
 #include <QFileSystemModel>
 #include <QHash>
 #include <QHeaderView>
@@ -18,6 +20,9 @@
 #include <QListView>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPalette>
+#include <QPixmap>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -25,6 +30,7 @@
 #include <QMenu>
 #include <QPointer>
 #include <QSignalSpy>
+#include <QStyle>
 #include <QStyleOptionViewItem>
 #include <QStyledItemDelegate>
 #include <QTemporaryDir>
@@ -51,6 +57,19 @@ auto setTestEnv(const char *name, const QByteArray &value)
             qunsetenv(name);
     });
 }
+
+// Conta pedidos de repaint no viewport (update() e o Paint resultante).
+class RepaintCounter : public QObject
+{
+public:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::UpdateRequest || event->type() == QEvent::Paint)
+            ++count;
+        return QObject::eventFilter(watched, event);
+    }
+    int count = 0;
+};
 
 QAction *actionNamed(QMenu *menu, const QString &text)
 {
@@ -385,6 +404,7 @@ private slots:
     void propertiesOfCurrentFolder();
     void refreshRereadsWithoutWatcherAndKeepsHistory();
     void sortSurvivesRefreshInBothViews();
+    void sortRejectsInvalidColumnsWithoutChangingState();
     void mimeHookResetRestoresAsyncQueries();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
@@ -400,6 +420,8 @@ private slots:
     void zoomChangesIconAndGridSize();
     void zoomClampsAndSurvivesModeSwitch();
     void gridLegendsReserveCellHeightAtBothZooms();
+    void gridLegendSelectedRowUsesHighlightBackground();
+    void gridLegendToggleWithoutHeightChangeRequestsRepaint();
     void viewRefinementsAreApplied();
     void zoomResetRestoresInitialSizes();
     void sizeColumnCellsAreRightAligned();
@@ -1928,7 +1950,10 @@ void FileTabTest::sortSurvivesRefreshInBothViews()
     QCOMPARE(treeOrder(), desc);
     QCOMPARE(iconOrder(), desc);
 
+    QAbstractItemModel *beforeRefresh = tree->model();
     QVERIFY(triggerActionByObjectName(tree, QStringLiteral("refreshAction")));
+    QVERIFY2(tree->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
     QTRY_VERIFY_WITH_TIMEOUT(treeOrder().size() == 3, 3000);
     QTRY_VERIFY_WITH_TIMEOUT(iconOrder().size() == 3, 3000);
     QCOMPARE(treeOrder(), desc);
@@ -1939,6 +1964,125 @@ void FileTabTest::sortSurvivesRefreshInBothViews()
     QCOMPARE(spy.at(0).at(1).value<Qt::SortOrder>(), Qt::AscendingOrder);
     QCOMPARE(spy.at(1).at(0).toInt(), 0);
     QCOMPARE(spy.at(1).at(1).value<Qt::SortOrder>(), Qt::DescendingOrder);
+}
+
+void FileTabTest::gridLegendSelectedRowUsesHighlightBackground()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QFile f(QDir(dir.path()).filePath(QStringLiteral("legenda.txt")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("1234567890");
+    }
+
+    FileTab tab(dir.path());
+    tab.setGridLegends(true, false);
+
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+    QTRY_VERIFY_WITH_TIMEOUT(icons->model()->rowCount(icons->rootIndex()) > 0, 3000);
+    const QModelIndex index = icons->model()->index(0, 0, icons->rootIndex());
+    QVERIFY(index.isValid());
+    QVERIFY(!index.siblingAtColumn(1).data(Qt::DisplayRole).toString().isEmpty());
+
+    QAbstractItemDelegate *delegate = icons->itemDelegate();
+    QVERIFY(delegate);
+
+    QStyleOptionViewItem option;
+    option.initFrom(icons);
+    QPalette light = option.palette;
+    const QColor highlight(20, 60, 120);
+    light.setColor(QPalette::Window, QColor(Qt::white));
+    light.setColor(QPalette::Base, QColor(Qt::white));
+    light.setColor(QPalette::Text, QColor(Qt::black));
+    light.setColor(QPalette::Highlight, highlight);
+    light.setColor(QPalette::HighlightedText, QColor(Qt::white));
+    option.palette = light;
+    option.state |= QStyle::State_Selected;
+    option.rect = QRect(0, 0, 320, 80);
+
+    QPixmap shot(option.rect.size());
+    shot.fill(QColor(Qt::white));
+    QPainter painter(&shot);
+    delegate->paint(&painter, option, index);
+    painter.end();
+
+    const QImage image = shot.toImage();
+    const int legendTop = option.rect.bottom() + 1 - QFontMetrics(option.font).height();
+    const QColor background = image.pixelColor(4, legendTop + 2);
+    const auto distance = [](const QColor &a, const QColor &b) {
+        return qAbs(a.red() - b.red()) + qAbs(a.green() - b.green())
+               + qAbs(a.blue() - b.blue());
+    };
+    QVERIFY2(distance(background, highlight) < 40,
+             qPrintable(QStringLiteral("fundo da legenda: %1, esperado Highlight %2")
+                            .arg(background.name(), highlight.name())));
+    QVERIFY2(distance(background, light.color(QPalette::HighlightedText)) > 60,
+             qPrintable(QStringLiteral("fundo da legenda %1 confunde com HighlightedText")
+                            .arg(background.name())));
+}
+
+void FileTabTest::gridLegendToggleWithoutHeightChangeRequestsRepaint()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QFile f(QDir(dir.path()).filePath(QStringLiteral("legenda.txt")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+    }
+
+    FileTab tab(dir.path());
+    tab.setGridLegends(true, false);
+    tab.setIconMode(true);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+    QTRY_VERIFY_WITH_TIMEOUT(icons->model()->rowCount(icons->rootIndex()) > 0, 3000);
+    QVERIFY(tab.gridSize() && !tab.gridDate());
+    const int gridHeight = icons->gridSize().height();
+    QVERIFY(gridHeight > 0);
+
+    RepaintCounter counter;
+    icons->viewport()->installEventFilter(&counter);
+    const auto removeFilter = qScopeGuard([&] { icons->viewport()->removeEventFilter(&counter); });
+    QApplication::processEvents();
+    counter.count = 0;
+
+    tab.setGridLegends(false, true);
+    QVERIFY(!tab.gridSize() && tab.gridDate());
+    QCOMPARE(icons->gridSize().height(), gridHeight); // mesma altura: setGridSize não muda nada
+    QApplication::processEvents();
+    QVERIFY2(counter.count > 0,
+             "trocar tamanho por data sem mudar a altura não gerou repaint da legenda");
+}
+
+void FileTabTest::sortRejectsInvalidColumnsWithoutChangingState()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+    QSignalSpy spy(&tab, &FileTab::sortChanged);
+
+    for (int column : {-1, 4}) {
+        tab.setSort(column, Qt::DescendingOrder);
+        QCOMPARE(tab.sortColumn(), 0);
+        QCOMPARE(tab.sortOrder(), Qt::AscendingOrder);
+        QCOMPARE(spy.count(), 0);
+    }
+
+    tab.setSort(3, Qt::DescendingOrder);
+    QCOMPARE(tab.sortColumn(), 3);
+    QCOMPARE(spy.count(), 1);
 }
 
 void FileTabTest::mimeHookResetRestoresAsyncQueries()
