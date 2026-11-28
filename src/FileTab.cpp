@@ -30,6 +30,7 @@
 #include <QProcessEnvironment>
 #include <QProgressDialog>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStyledItemDelegate>
@@ -368,7 +369,8 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_tree->setRootIsDecorated(false);
     m_tree->setItemsExpandable(false);
     m_tree->setSortingEnabled(true);
-    m_tree->sortByColumn(0, Qt::AscendingOrder);
+    connect(m_tree->header(), &QHeaderView::sortIndicatorChanged, this, &FileTab::setSort);
+    applySort();
     m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_tree->setEditTriggers(QAbstractItemView::EditKeyPressed);
@@ -664,6 +666,27 @@ void FileTab::refreshModel()
         oldIconsSelection->deleteLater();
     oldProxy->deleteLater();
     oldModel->deleteLater();
+
+    applySort();
+}
+
+void FileTab::setSort(int column, Qt::SortOrder order)
+{
+    if (column < 0 || column > 3)
+        return;
+
+    m_sortColumn = column;
+    m_sortOrder = order;
+    applySort();
+    emit sortChanged(column, order);
+}
+
+void FileTab::applySort()
+{
+    // sortByColumn() atualiza o indicador do cabeçalho; bloquear esse sinal
+    // evita que a reaplicação programática reentre em setSort().
+    const QSignalBlocker blocked(m_tree->header());
+    m_tree->sortByColumn(m_sortColumn, m_sortOrder);
 }
 
 void FileTab::back()
@@ -921,7 +944,9 @@ void FileTab::showContextMenu(const QPoint &pos)
         menu.addSeparator();
         addPaste();
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("view-refresh"), label(tr("Atualizar")), this, [this] { refreshModel(); });
+        QAction *refresh = menu.addAction(QIcon::fromTheme("view-refresh"), label(tr("Atualizar")),
+                                          this, [this] { refreshModel(); });
+        refresh->setObjectName(QStringLiteral("refreshAction"));
         QMenu *view = menu.addMenu(label(tr("Exibir")));
         addViewMenu(view);
         menu.addAction(label(tr("Abrir terminal aqui")), this, [this] { openTerminal(m_path); });

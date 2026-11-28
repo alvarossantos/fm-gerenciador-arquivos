@@ -172,6 +172,30 @@ void openContextMenu(QAbstractItemView *view, const QModelIndex &index = QModelI
     QApplication::sendEvent(view->viewport(), &ev);
 }
 
+// Dispara a ação do menu de contexto identificada por objectName, sem depender do rótulo.
+bool triggerActionByObjectName(QAbstractItemView *view, const QString &objectName)
+{
+    bool found = false;
+    setContextMenuHookForTests([&found, objectName](QMenu *menu, const QStringList &) {
+        for (QAction *a : menu->actions()) {
+            if (a->objectName() != objectName)
+                continue;
+            found = true;
+            const QPointer<QAction> action = a;
+            QTimer::singleShot(0, [action] {
+                if (action)
+                    action->trigger();
+                closePopups();
+            });
+            return;
+        }
+        QTimer::singleShot(0, [] { closePopups(); });
+    });
+    const auto reset = qScopeGuard([] { setContextMenuHookForTests({}); });
+    openContextMenu(view);
+    return found;
+}
+
 
 void installFakeBsdtar(const QString &dir, const QString &mode)
 {
@@ -358,6 +382,7 @@ private slots:
     void missingTerminalReportsStatus();
     void propertiesOfCurrentFolder();
     void refreshRereadsWithoutWatcherAndKeepsHistory();
+    void sortSurvivesRefreshInBothViews();
     void mimeHookResetRestoresAsyncQueries();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
@@ -1846,6 +1871,71 @@ void FileTabTest::refreshRereadsWithoutWatcherAndKeepsHistory()
     QTRY_VERIFY_WITH_TIMEOUT(!iconHas(QStringLiteral("novo.txt")), 3000);
     QCOMPARE(tab.currentPath(), QDir::cleanPath(sub));
     QVERIFY(tab.canGoBack());
+}
+
+void FileTabTest::sortSurvivesRefreshInBothViews()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (const QString &name : { QStringLiteral("a.txt"), QStringLiteral("b.txt"),
+                                 QStringLiteral("c.txt") }) {
+        QFile f(QDir(dir.path()).filePath(name));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(name.toUtf8());
+    }
+
+    FileTab tab(dir.path());
+    QSignalSpy spy(&tab, &FileTab::sortChanged);
+
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QListView *icons = nullptr;
+    for (QListView *candidate : tab.findChildren<QListView *>())
+        if (candidate->viewMode() == QListView::IconMode) { icons = candidate; break; }
+    QVERIFY(icons);
+
+    // Cada visão é lida por conta própria e comparada com o literal: as duas
+    // compartilham o modelo, então compará-las entre si não provaria nada.
+    const auto rowNames = [](QAbstractItemView *view) {
+        QStringList out;
+        QAbstractItemModel *m = view->model();
+        const QModelIndex root = view->rootIndex();
+        for (int r = 0; r < m->rowCount(root); ++r)
+            out << m->data(m->index(r, 0, root), Qt::DisplayRole).toString();
+        return out;
+    };
+    auto treeOrder = [rowNames, tree] { return rowNames(tree); };
+    auto iconOrder = [rowNames, icons] { return rowNames(icons); };
+
+    QTRY_VERIFY_WITH_TIMEOUT(treeOrder().size() == 3, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(iconOrder().size() == 3, 3000);
+
+    const QStringList asc { QStringLiteral("a.txt"), QStringLiteral("b.txt"), QStringLiteral("c.txt") };
+    const QStringList desc { QStringLiteral("c.txt"), QStringLiteral("b.txt"), QStringLiteral("a.txt") };
+
+    tab.setSort(0, Qt::AscendingOrder);
+    QCOMPARE(tab.sortColumn(), 0);
+    QCOMPARE(tab.sortOrder(), Qt::AscendingOrder);
+    QCOMPARE(treeOrder(), asc);
+    QCOMPARE(iconOrder(), asc);
+
+    tab.setSort(0, Qt::DescendingOrder);
+    QCOMPARE(tab.sortColumn(), 0);
+    QCOMPARE(tab.sortOrder(), Qt::DescendingOrder);
+    QCOMPARE(treeOrder(), desc);
+    QCOMPARE(iconOrder(), desc);
+
+    QVERIFY(triggerActionByObjectName(tree, QStringLiteral("refreshAction")));
+    QTRY_VERIFY_WITH_TIMEOUT(treeOrder().size() == 3, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(iconOrder().size() == 3, 3000);
+    QCOMPARE(treeOrder(), desc);
+    QCOMPARE(iconOrder(), desc);
+
+    QCOMPARE(spy.count(), 2);
+    QCOMPARE(spy.at(0).at(0).toInt(), 0);
+    QCOMPARE(spy.at(0).at(1).value<Qt::SortOrder>(), Qt::AscendingOrder);
+    QCOMPARE(spy.at(1).at(0).toInt(), 0);
+    QCOMPARE(spy.at(1).at(1).value<Qt::SortOrder>(), Qt::DescendingOrder);
 }
 
 void FileTabTest::mimeHookResetRestoresAsyncQueries()

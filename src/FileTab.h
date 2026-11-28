@@ -66,6 +66,10 @@ public:
     void setIconMode(bool icons);
     void setZoom(int percent);
     int zoom() const { return m_zoom; }
+    int sortColumn() const { return m_sortColumn; }
+    Qt::SortOrder sortOrder() const { return m_sortOrder; }
+    void setSort(int column, Qt::SortOrder order);
+    void applySort();
     void setPreviewVisible(bool visible);
     void setShowHidden(bool show);
     void setViewActions(QAction *list, QAction *grid, QAction *preview, QAction *hidden,
@@ -73,6 +77,7 @@ public:
 
 signals:
     void zoomChanged(int percent);
+    void sortChanged(int column, Qt::SortOrder order);
     void pathChanged(const QString &path);
     void titleChanged(const QString &title);
     void statusMessage(const QString &text);
@@ -130,6 +135,8 @@ private:
     int m_histIdx = -1;
     bool m_iconMode = false;
     int m_zoom = 100;
+    int m_sortColumn = 0;
+    Qt::SortOrder m_sortOrder = Qt::AscendingOrder;
     QSize m_treeIconBase;
     QSize m_gridIconBase;
     QSize m_gridBase;
