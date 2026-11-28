@@ -318,7 +318,7 @@ void MainWindow::syncToolbarActions()
 
     struct Rule { QAction *action; bool visible; };
     const Rule rules[] = {
-        {m_iconsAct, showView}, {m_previewAct, showExtras}, {m_hiddenAct, showExtras},
+        {m_listAct, showView}, {m_iconsAct, showView}, {m_previewAct, showExtras}, {m_hiddenAct, showExtras},
         {m_zoomInAct, showExtras}, {m_zoomOutAct, showExtras}, {m_zoomResetAct, showExtras},
         {m_newTabAct, showNew},
     };

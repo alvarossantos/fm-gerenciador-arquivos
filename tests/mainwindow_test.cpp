@@ -1008,16 +1008,20 @@ void MainWindowTest::sharedActionsSurviveToolbarRemoval()
     auto *tb = toolbar(&w);
     QVERIFY(more && tb);
     QAction *icons = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
+    QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
     QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
-    QVERIFY(icons && zoomIn);
+    QVERIFY(icons && list && zoomIn);
     const QKeySequence zoomShortcut = zoomIn->shortcut();
 
-    QVERIFY2(tb->widgetForAction(icons) == nullptr, "Visão em ícones ainda na toolbar");
+    QVERIFY2(tb->widgetForAction(icons) == nullptr, "Grade de ícones ainda na toolbar");
+    QVERIFY2(tb->widgetForAction(list) == nullptr, "Lista detalhada ainda na toolbar");
     QVERIFY2(tb->widgetForAction(zoomIn) == nullptr, "zoom ainda na toolbar");
     QCOMPARE(menuAction(more, icons->text()), icons);
+    QCOMPARE(menuAction(more, list->text()), list);
     QCOMPARE(menuAction(more, zoomIn->text()), zoomIn);
     QCOMPARE(zoomIn->shortcut(), zoomShortcut);
     QCOMPARE(w.actions().count(icons), 1);
+    QCOMPARE(w.actions().count(list), 1);
     QCOMPARE(w.actions().count(zoomIn), 1);
 
     icons->trigger();
@@ -1026,6 +1030,14 @@ void MainWindowTest::sharedActionsSurviveToolbarRemoval()
     for (int i = 0; i < tabs->count(); ++i) {
         auto *tab = static_cast<FileTab *>(tabs->widget(i));
         QVERIFY2(usesIconMode(tab), "ação recolhida não trocou a visão em todas as abas");
+        QCOMPARE(tab->zoom(), 125);
+    }
+
+    list->trigger();
+    QApplication::processEvents();
+    for (int i = 0; i < tabs->count(); ++i) {
+        auto *tab = static_cast<FileTab *>(tabs->widget(i));
+        QVERIFY2(!usesIconMode(tab), "ação Lista detalhada recolhida não trocou a visão em todas as abas");
         QCOMPARE(tab->zoom(), 125);
     }
 }
@@ -1046,10 +1058,14 @@ void MainWindowTest::narrowWindowKeepsActionsAndAncestors()
     QApplication::processEvents();
 
     auto *more = w.findChild<QMenu *>(QStringLiteral("moreMenu"));
-    QVERIFY(more);
+    auto *tb = toolbar(&w);
+    QVERIFY(more && tb);
+    QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
     QAction *preview = findAction(&w, QStringLiteral("Painel de pré-visualização"));
     QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
-    QVERIFY(preview && zoomIn);
+    QVERIFY(list && preview && zoomIn);
+    QVERIFY2(tb->widgetForAction(list) == nullptr, "Lista detalhada ainda na toolbar estreita");
+    QCOMPARE(menuAction(more, list->text()), list);
     QCOMPARE(menuAction(more, preview->text()), preview);
     QCOMPARE(menuAction(more, zoomIn->text()), zoomIn);
 
