@@ -41,6 +41,7 @@ private:
     void rebuildBreadcrumb();
     void beginPathEdit();
     void endPathEdit();
+    void openCustomizeDialog();
 
     QTabWidget *m_tabs;
     QWidget *m_pathContainer;

@@ -2,11 +2,16 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QContextMenuEvent>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QHBoxLayout>
 #include <QListWidget>
 #include <QKeySequence>
+#include <QPushButton>
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
@@ -153,6 +158,12 @@ bool samePreferences(const UiPreferences &a, const UiPreferences &b)
            && a.columns == b.columns && a.preview == b.preview;
 }
 
+QListWidgetItem *findPlace(QListWidget *places, const QString &label)
+{
+    const auto items = places->findItems(label, Qt::MatchExactly);
+    return items.isEmpty() ? nullptr : items.first();
+}
+
 } // namespace
 
 class MainWindowTest : public QObject
@@ -181,6 +192,9 @@ private slots:
     void breadcrumbLimitPerPreset();
     void switchPresetResetsManualAdjustments();
     void restoreDefaultsPersistsAfterRestart();
+    void previewTogglePersistsAfterRestart();
+    void customizeActionOpensDialog();
+    void customizeDialogPersistsManualAdjustments();
 };
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
@@ -1084,6 +1098,121 @@ void MainWindowTest::restoreDefaultsPersistsAfterRestart()
              "preferências não sobreviveram ao reinício");
     QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
     QCOMPARE(settings.value(QStringLiteral("ui/preset")).toString(), QStringLiteral("balanced"));
+}
+
+void MainWindowTest::previewTogglePersistsAfterRestart()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    {
+        MainWindow w(home);
+        w.show();
+        QApplication::processEvents();
+        QAction *preview = findAction(&w, QStringLiteral("Painel de pré-visualização"));
+        QVERIFY(preview);
+        QVERIFY(!preview->isChecked());
+        preview->trigger();
+        QVERIFY(preview->isChecked());
+        QVERIFY2(w.uiPreferences().preview, "prévia não entrou nas preferências");
+        QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
+        QVERIFY(settings.value(QStringLiteral("ui/preview")).toBool());
+        w.close();
+    }
+
+    MainWindow restarted(home);
+    QVERIFY(restarted.uiPreferences().preview);
+    QAction *preview = findAction(&restarted, QStringLiteral("Painel de pré-visualização"));
+    QVERIFY(preview && preview->isChecked());
+}
+
+void MainWindowTest::customizeActionOpensDialog()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+    auto *menu = w.findChild<QMenu *>(QStringLiteral("interfaceMenu"));
+    QVERIFY(menu);
+    QAction *customize = menuAction(menu, QStringLiteral("Personalizar…"));
+    QVERIFY2(customize, "Personalizar… ausente do menu Interface");
+    customize->trigger();
+    QApplication::processEvents();
+    QVERIFY2(w.findChild<QDialog *>(QStringLiteral("customizeDialog")),
+             "Personalizar… não abriu o painel");
+}
+
+void MainWindowTest::customizeDialogPersistsManualAdjustments()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    {
+        MainWindow w(home);
+        w.show();
+        QApplication::processEvents();
+        QVERIFY(choosePreset(&w, QStringLiteral("Avançada")));
+        auto *places = w.findChild<QListWidget *>(QStringLiteral("places"));
+        QVERIFY(places);
+        QListWidgetItem *entry = findPlace(places, QStringLiteral("Personalizar…"));
+        QVERIFY2(entry && !entry->isHidden(), "Personalizar…” ausente na lateral");
+        places->scrollToItem(entry);
+        QApplication::processEvents();
+        QTest::mouseClick(places->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
+                          places->visualItemRect(entry).center());
+        QApplication::processEvents();
+
+        auto *dialog = w.findChild<QDialog *>(QStringLiteral("customizeDialog"));
+        QVERIFY2(dialog, "Personalizar… da lateral não abriu o painel");
+        auto *density = dialog->findChild<QComboBox *>(QStringLiteral("customDensity"));
+        auto *columns = dialog->findChild<QComboBox *>(QStringLiteral("customColumns"));
+        auto *iconSize = dialog->findChild<QComboBox *>(QStringLiteral("customIconSize"));
+        auto *preview = dialog->findChild<QCheckBox *>(QStringLiteral("customPreview"));
+        auto *buttons = dialog->findChild<QDialogButtonBox *>();
+        QVERIFY(density && columns && iconSize && preview && buttons);
+        density->setCurrentIndex(0);
+        columns->setCurrentIndex(2);
+        iconSize->setCurrentIndex(0);
+        preview->setChecked(true);
+        QPushButton *ok = buttons->button(QDialogButtonBox::Ok);
+        QVERIFY(ok);
+        ok->click();
+        QApplication::processEvents();
+
+        const UiPreferences prefs = w.uiPreferences();
+        QCOMPARE(prefs.preset, UiPreset::Advanced);
+        QCOMPARE(prefs.density, 0);
+        QCOMPARE(prefs.iconSize, 32);
+        QCOMPARE(prefs.columns.size(), 3);
+        QVERIFY(prefs.preview);
+
+        QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
+        QCOMPARE(settings.value(QStringLiteral("ui/density")).toInt(), 0);
+        QCOMPARE(settings.value(QStringLiteral("ui/iconSize")).toInt(), 32);
+        QCOMPARE(settings.value(QStringLiteral("ui/columns")).toStringList().size(), 3);
+        QVERIFY(settings.value(QStringLiteral("ui/preview")).toBool());
+        w.close();
+    }
+
+    MainWindow restarted(home);
+    UiPreferences expected = defaultUiPreferences(UiPreset::Advanced);
+    expected.density = 0;
+    expected.iconSize = 32;
+    expected.columns = QStringList{QStringLiteral("0"), QStringLiteral("1"),
+                                   QStringLiteral("2")};
+    expected.preview = true;
+    QVERIFY2(samePreferences(restarted.uiPreferences(), expected),
+             "ajustes manuais não sobreviveram ao reinício");
 }
 
 QTEST_MAIN(MainWindowTest)

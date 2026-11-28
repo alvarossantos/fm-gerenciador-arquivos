@@ -77,6 +77,7 @@ signals:
     void titleChanged(const QString &title);
     void statusMessage(const QString &text);
     void openInNewTab(const QString &path);
+    void customizeRequested();
 
 private:
     QAbstractItemView *currentView() const;

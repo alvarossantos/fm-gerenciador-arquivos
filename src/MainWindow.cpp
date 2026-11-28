@@ -3,10 +3,15 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFontMetrics>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QMenu>
@@ -21,6 +26,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <QVector>
 
 namespace {
@@ -125,6 +131,8 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     for (QAction *a : {m_presetCompactAct, m_presetBalancedAct, m_presetAdvancedAct})
         a->setCheckable(true);
     m_restoreDefaultsAct = interfaceMenu->addAction(tr("Restaurar padrões"));
+    QAction *customizeAct = interfaceMenu->addAction(tr("Personalizar…"));
+    connect(customizeAct, &QAction::triggered, this, &MainWindow::openCustomizeDialog);
 
     for (QAction *a : {m_back, m_forward, m_up, m_iconsAct, m_previewAct, m_hiddenAct,
                        m_zoomInAct, m_zoomOutAct, m_zoomResetAct, m_newTabAct})
@@ -150,6 +158,9 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     connect(m_previewAct, &QAction::toggled, this, [this](bool on) {
         for (int i = 0; i < m_tabs->count(); ++i)
             static_cast<FileTab *>(m_tabs->widget(i))->setPreviewVisible(on);
+        m_ui.preview = on;
+        QSettings s(QStringLiteral("fm"), QStringLiteral("fm"));
+        s.setValue(QStringLiteral("ui/preview"), on);
     });
     connect(m_hiddenAct, &QAction::toggled, this, [this](bool on) {
         for (int i = 0; i < m_tabs->count(); ++i)
@@ -224,6 +235,7 @@ FileTab *MainWindow::addTab(const QString &path)
     const int idx = m_tabs->addTab(tab, QDir(path).dirName());
     m_tabs->setCurrentIndex(idx);
 
+    connect(tab, &FileTab::customizeRequested, this, &MainWindow::openCustomizeDialog);
     connect(tab, &FileTab::titleChanged, this, [this, tab](const QString &t) {
         const int i = m_tabs->indexOf(tab);
         if (i >= 0)
@@ -349,6 +361,61 @@ void MainWindow::applyUiPreferences(const UiPreferences &prefs)
 UiPreferences MainWindow::uiPreferences() const
 {
     return m_ui;
+}
+
+void MainWindow::openCustomizeDialog()
+{
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("customizeDialog"));
+    dialog->setWindowTitle(tr("Personalizar interface"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *root = new QVBoxLayout(dialog);
+    auto *form = new QFormLayout;
+    auto *density = new QComboBox(dialog);
+    density->setObjectName(QStringLiteral("customDensity"));
+    density->addItems({ tr("Compacta"), tr("Equilibrada"), tr("Avançada") });
+    density->setCurrentIndex(m_ui.density);
+    form->addRow(tr("Densidade da lista"), density);
+
+    auto *columns = new QComboBox(dialog);
+    columns->setObjectName(QStringLiteral("customColumns"));
+    const QStringList names { tr("Nome"), tr("Tamanho"), tr("Tipo"), tr("Modificação") };
+    for (int count = 1; count <= names.size(); ++count)
+        columns->addItem(names.mid(0, count).join(QStringLiteral(", ")));
+    columns->setCurrentIndex(qBound(0, m_ui.columns.size() - 1, names.size() - 1));
+    form->addRow(tr("Colunas visíveis"), columns);
+
+    auto *iconSize = new QComboBox(dialog);
+    iconSize->setObjectName(QStringLiteral("customIconSize"));
+    iconSize->addItems({ tr("32 px"), tr("48 px"), tr("64 px") });
+    iconSize->setCurrentIndex(m_ui.iconSize == 32 ? 0 : (m_ui.iconSize == 64 ? 2 : 1));
+    form->addRow(tr("Tamanho dos ícones"), iconSize);
+
+    auto *preview = new QCheckBox(dialog);
+    preview->setObjectName(QStringLiteral("customPreview"));
+    preview->setChecked(m_ui.preview);
+    form->addRow(tr("Painel de pré-visualização"), preview);
+    root->addLayout(form);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+    root->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, density, columns,
+                                                           iconSize, preview] {
+        UiPreferences prefs = m_ui;
+        prefs.density = density->currentIndex();
+        static const int sizes[] = { 32, 48, 64 };
+        prefs.iconSize = sizes[qBound(0, iconSize->currentIndex(), 2)];
+        QStringList selected;
+        for (int i = 0; i <= columns->currentIndex(); ++i)
+            selected << QString::number(i);
+        prefs.columns = selected;
+        prefs.preview = preview->isChecked();
+        applyUiPreferences(prefs);
+        dialog->accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    dialog->show();
 }
 
 void MainWindow::beginPathEdit()

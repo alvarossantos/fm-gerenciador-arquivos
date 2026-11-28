@@ -462,6 +462,11 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     auto *root = new QListWidgetItem(QIcon::fromTheme("drive-harddisk"), tr("Raiz (/)"), m_places);
     root->setData(Qt::UserRole, QStringLiteral("/"));
     connect(m_places, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) {
+        if (it->data(PlaceSectionRole).toString() == QStringLiteral("control")) {
+            if (it->data(PlaceGroupRole).toString() == QStringLiteral("control-customize"))
+                emit customizeRequested();
+            return;
+        }
         goTo(it->data(Qt::UserRole).toString());
     });
 
