@@ -1337,6 +1337,16 @@ void MainWindowTest::keyboardOpensMenusAt320InEveryPreset()
 
     auto *tb = toolbar(&w);
     QVERIFY(tb);
+    const QString nested = QDir(home).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(nested));
+    auto *initialTab = w.findChild<FileTab *>();
+    QVERIFY(initialTab);
+    QVERIFY(initialTab->goTo(nested));
+    QVERIFY(initialTab->goTo(home));
+    initialTab->back(); // deixa Voltar e Avançar habilitados para a cadeia de foco
+    QVERIFY(initialTab->canGoBack());
+    QVERIFY(initialTab->canGoForward());
+    QApplication::processEvents();
     auto *files = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
     auto *view = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
     QVERIFY(files && view);
@@ -1346,6 +1356,33 @@ void MainWindowTest::keyboardOpensMenusAt320InEveryPreset()
     QCOMPARE(files->menu()->objectName(), QStringLiteral("filesMenu"));
     QCOMPARE(view->menu()->objectName(), QStringLiteral("viewMenu"));
 
+    auto focusName = [](QWidget *w) -> QString {
+        if (!w)
+            return QStringLiteral("(none)");
+        if (auto *button = qobject_cast<QToolButton *>(w)) {
+            const QString name = button->objectName();
+            if (name == QLatin1String("filesMenuButton"))
+                return QStringLiteral("files");
+            if (name == QLatin1String("viewMenuButton"))
+                return QStringLiteral("view");
+            if (name == QLatin1String("breadcrumbOverflow"))
+                return QStringLiteral("overflow");
+            if (name == QLatin1String("breadcrumbButton"))
+                return QStringLiteral("crumb");
+            return button->text();
+        }
+        if (qobject_cast<QListWidget *>(w))
+            return QStringLiteral("places");
+        if (qobject_cast<QTreeView *>(w))
+            return QStringLiteral("tree");
+        return QString::fromLatin1(w->metaObject()->className());
+    };
+
+    // Cadeia natural da toolbar/central widget: Arquivos entra uma vez, Voltar,
+    // Avançar e Subir vêm antes do breadcrumb e Visualização antes da lista.
+    const QStringList expected{"files", "Voltar", "Avançar", "Subir", "overflow",
+                               "view",  "places", "tree",   "crumb"};
+
     for (const QString &preset : { QStringLiteral("Compacta"), QStringLiteral("Equilibrada"),
                                    QStringLiteral("Avançada") }) {
         QVERIFY(choosePreset(&w, preset));
@@ -1353,26 +1390,41 @@ void MainWindowTest::keyboardOpensMenusAt320InEveryPreset()
         w.activateWindow();
         QApplication::processEvents();
 
-        for (QToolButton *button : {files, view}) {
-            if (auto *tab = w.findChild<FileTab *>())
-                tab->setFocus(); // reinicia a cadeia de foco como numa janela recém-aberta
-            QVERIFY2(button->isVisible(), "Botão de menu desapareceu a 320 px");
-            bool reached = false;
-            for (int press = 0; press < 30; ++press) {
+        // Âncora única da asserção: o restante da cadeia é percorrado só com Tab.
+        files->setFocus();
+        QCOMPARE(focusName(QApplication::focusWidget()), QStringLiteral("files"));
+        QStringList seen{focusName(QApplication::focusWidget())};
+        for (int i = 0; i < expected.size() - 1; ++i) {
+            QWidget *focus = QApplication::focusWidget();
+            QTest::keyClick(focus ? focus : static_cast<QWidget *>(&w), Qt::Key_Tab);
+            seen << focusName(QApplication::focusWidget());
+        }
+        QCOMPARE(seen, expected);
+        QCOMPARE(seen.filter(QStringLiteral("files")).size(), 1);
+        // O último breadcrumb é o fim da cadeia: Tab não reinicia em Arquivos.
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_Tab);
+        QCOMPARE(focusName(QApplication::focusWidget()), QStringLiteral("crumb"));
+
+        auto reachButton = [&](QToolButton *button) {
+            for (int i = 0; i < 12; ++i) {
+                if (QApplication::focusWidget() == button)
+                    return true;
                 QWidget *focus = QApplication::focusWidget();
-                QTest::keyClick(focus ? focus : static_cast<QWidget *>(&w), Qt::Key_Tab);
-                if (QApplication::focusWidget() == button) {
-                    reached = true;
-                    break;
-                }
+                QTest::keyClick(focus ? focus : static_cast<QWidget *>(&w), Qt::Key_Tab,
+                                Qt::ShiftModifier);
             }
-            QVERIFY2(reached, qPrintable(QStringLiteral("%1: Tab não alcançou %2 em 30 teclas")
-                                             .arg(preset, button->objectName())));
+            return QApplication::focusWidget() == button;
+        };
+
+        for (QToolButton *button : {files, view}) {
+            QVERIFY2(button->isVisible(), "Botão de menu desapareceu a 320 px");
+            QVERIFY2(reachButton(button),
+                     qPrintable(QStringLiteral("%1: Tab não alcançou %2")
+                                    .arg(preset, button->objectName())));
             QVERIFY(button->hasFocus());
 
             for (Qt::Key key : {Qt::Key_Space, Qt::Key_Return, Qt::Key_Enter}) {
-                if (QApplication::focusWidget() != button)
-                    button->setFocus();
+                QVERIFY2(reachButton(button), "Foco saiu do botão antes da tecla");
                 QTest::keyClick(button, key);
                 QVERIFY2(button->menu()->isVisible(),
                          qPrintable(QStringLiteral("%1: %2 não abriu com a tecla %3")

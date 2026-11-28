@@ -83,6 +83,12 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_back = tb->addAction(icon("go-previous", QStyle::SP_ArrowBack), tr("Voltar"));
     m_forward = tb->addAction(icon("go-next", QStyle::SP_ArrowForward), tr("Avançar"));
     m_up = tb->addAction(icon("go-up", QStyle::SP_ArrowUp), tr("Subir"));
+    // A toolbar não dá foco por padrão aos botões de ação; sem isso Voltar,
+    // Avançar e Subir ficam fora da navegação por Tab.
+    for (QAction *a : {m_back, m_forward, m_up}) {
+        if (auto *button = qobject_cast<QToolButton *>(tb->widgetForAction(a)))
+            button->setFocusPolicy(Qt::TabFocus);
+    }
     m_back->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Left));
     m_forward->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Right));
     m_up->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
@@ -638,10 +644,6 @@ void MainWindow::rebuildBreadcrumb()
         m_pathLayout->addWidget(b);
         buttons.append(b);
     }
-    // O toolbar não faz o wrap sozinho a partir do último botão do breadcrumb.
-    // Ligá-lo ao menu Arquivos mantém os dois botões de menu alcançáveis por Tab.
-    if (m_filesMenuButton && !buttons.isEmpty())
-        QWidget::setTabOrder(buttons.last(), m_filesMenuButton);
 
     QVector<bool> visible(buttons.size(), true);
     bool overflowNeeded = false;
@@ -707,12 +709,6 @@ void MainWindow::rebuildBreadcrumb()
     m_overflow->setVisible(overflowNeeded);
     if (overflowNeeded)
         m_pathLayout->addWidget(m_overflow);
-    if (overflowNeeded) {
-        QWidget::setTabOrder(m_filesMenuButton, m_overflow);
-        QWidget::setTabOrder(m_overflow, m_viewMenuButton);
-    } else {
-        QWidget::setTabOrder(m_filesMenuButton, m_viewMenuButton);
-    }
     m_pathLayout->addStretch(1);
 }
 
