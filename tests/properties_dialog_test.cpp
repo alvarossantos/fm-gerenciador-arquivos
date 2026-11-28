@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QLabel>
 #include <QLocale>
+#include <QPointer>
 #include <QPushButton>
 #include <QSignalSpy>
 #include <QTabWidget>
@@ -27,8 +28,63 @@ private slots:
     void layoutByPreset();
     void fileFields();
     void closeDuringScanDoesNotBlockAndReopenWorks();
+    void closeButtonDeletesDialogDuringScan();
+    void escapeDeletesDialogDuringScan();
     void scanCountsHiddenAndDoesNotFollowSymlinks();
 };
+
+namespace {
+
+class ScanGate
+{
+public:
+    ~ScanGate()
+    {
+        setScanItemHookForTests({});
+        unblock();
+    }
+
+    void arm()
+    {
+        setScanItemHookForTests([this] {
+            if (calls.fetch_add(1) == 0) {
+                QMetaObject::invokeMethod(&loop, [this] { loop.quit(); },
+                                          Qt::QueuedConnection);
+            }
+            std::unique_lock<std::mutex> lock(mutex);
+            cv.wait(lock, [this] { return released; });
+        });
+    }
+
+    void unblock()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            released = true;
+        }
+        cv.notify_all();
+    }
+
+    QEventLoop loop;
+
+private:
+    std::atomic_int calls{ 0 };
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool released = false;
+};
+
+QPushButton *closeButton(QDialog *dialog)
+{
+    const auto buttons = dialog->findChildren<QPushButton *>();
+    for (QPushButton *button : buttons) {
+        if (button->text() == QStringLiteral("Fechar"))
+            return button;
+    }
+    return nullptr;
+}
+
+} // namespace
 
 void PropertiesDialogTest::layoutByPreset()
 {
@@ -125,17 +181,19 @@ void PropertiesDialogTest::closeDuringScanDoesNotBlockAndReopenWorks()
     const auto reset = qScopeGuard([] { setScanItemHookForTests({}); });
 
     {
-        PropertiesDialog dlg(root, defaultUiPreferences(UiPreset::Advanced));
+        auto *dlg = new PropertiesDialog(root, defaultUiPreferences(UiPreset::Advanced));
+        QPointer<PropertiesDialog> alive(dlg);
         hookLoop.exec();
         QElapsedTimer timer;
         timer.start();
-        dlg.close();
+        dlg->close();
         QVERIFY2(timer.elapsed() < 200, qPrintable(QStringLiteral("close() levou %1 ms").arg(timer.elapsed())));
         {
             std::lock_guard<std::mutex> lock(mutex);
             release = true;
         }
         cv.notify_all();
+        QTRY_VERIFY_WITH_TIMEOUT(alive.isNull(), 5000);
         QTRY_VERIFY_WITH_TIMEOUT(PropertiesDialog::activeScansForTests() == 0, 5000);
     }
 
@@ -145,6 +203,66 @@ void PropertiesDialogTest::closeDuringScanDoesNotBlockAndReopenWorks()
     QCOMPARE(spy.at(0).at(0).toString(), QDir::cleanPath(other));
     QCOMPARE(spy.at(0).at(1).toLongLong(), 7LL);
     QCOMPARE(spy.at(0).at(2).toInt(), 0);
+    QTRY_VERIFY_WITH_TIMEOUT(PropertiesDialog::activeScansForTests() == 0, 5000);
+}
+
+void PropertiesDialogTest::closeButtonDeletesDialogDuringScan()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("scan"));
+    QVERIFY(QDir().mkpath(root));
+    for (int i = 0; i < 200; ++i) {
+        QFile f(QDir(root).filePath(QString::number(i)));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QVERIFY(f.write("abcd") == 4);
+    }
+
+    ScanGate gate;
+    gate.arm();
+    auto *dlg = new PropertiesDialog(root, defaultUiPreferences(UiPreset::Advanced));
+    QPointer<PropertiesDialog> alive(dlg);
+    gate.loop.exec();
+
+    QPushButton *button = closeButton(dlg);
+    QVERIFY2(button, "botão Fechar ausente");
+    QElapsedTimer timer;
+    timer.start();
+    button->click();
+    QVERIFY2(timer.elapsed() < 200,
+             qPrintable(QStringLiteral("click levou %1 ms").arg(timer.elapsed())));
+    gate.unblock();
+
+    QTRY_VERIFY_WITH_TIMEOUT(alive.isNull(), 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(PropertiesDialog::activeScansForTests() == 0, 5000);
+}
+
+void PropertiesDialogTest::escapeDeletesDialogDuringScan()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString root = QDir(dir.path()).filePath(QStringLiteral("scan"));
+    QVERIFY(QDir().mkpath(root));
+    for (int i = 0; i < 200; ++i) {
+        QFile f(QDir(root).filePath(QString::number(i)));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QVERIFY(f.write("abcd") == 4);
+    }
+
+    ScanGate gate;
+    gate.arm();
+    auto *dlg = new PropertiesDialog(root, defaultUiPreferences(UiPreset::Advanced));
+    QPointer<PropertiesDialog> alive(dlg);
+    gate.loop.exec();
+
+    QElapsedTimer timer;
+    timer.start();
+    QTest::keyClick(dlg, Qt::Key_Escape);
+    QVERIFY2(timer.elapsed() < 200,
+             qPrintable(QStringLiteral("Esc levou %1 ms").arg(timer.elapsed())));
+    gate.unblock();
+
+    QTRY_VERIFY_WITH_TIMEOUT(alive.isNull(), 5000);
     QTRY_VERIFY_WITH_TIMEOUT(PropertiesDialog::activeScansForTests() == 0, 5000);
 }
 

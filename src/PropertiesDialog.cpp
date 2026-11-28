@@ -163,6 +163,7 @@ PropertiesDialog::PropertiesDialog(const QString &path, const UiPreferences &pre
       m_cancel(std::make_shared<std::atomic_bool>(false))
 {
     setWindowModality(Qt::NonModal);
+    setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(tr("Propriedades — %1").arg(QFileInfo(m_path).fileName()));
     resize(520, 440);
 
