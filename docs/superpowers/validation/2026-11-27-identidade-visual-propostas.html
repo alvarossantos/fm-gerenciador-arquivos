@@ -1,0 +1,349 @@
+<h2>Issue #18 — três direções visuais para o <code>fm</code></h2>
+<p class="subtitle">Mesma paleta do iNiR e mesmo cenário em todas: <code>~/Projetos/fm</code> (7 itens), selecionado <code>main.cpp</code>. Clique numa coluna para pré-selecionar a direção; a escolha final pode vir também por mensagem.</p>
+
+<p style="font-size:12px;color:var(--muted,#9e9ea2);margin:6px 0 14px">
+Paleta ativa lida de <code>~/.local/state/quickshell/user/generated/app-palette.json</code> (iNiR, modo dark), o mesmo arquivo que o <code>main.cpp</code> passa ao <code>ThemeManager</code>: superfície <code>#111113</code>, container <code>#1e1e21</code>, popup <code>#27272a</code>, acento <code>#ca8aba</code>, texto <code>#F5F5F7</code>, contorno <code>#4a4a4d</code>. Referência de documentação consultada: iNiR theming (docs agora em <code>inir.space/docs</code>).
+</p>
+
+<style>
+  .fm-compare { display:grid; grid-template-columns:repeat(3,minmax(340px,1fr)); gap:14px; align-items:start; overflow-x:auto; padding-bottom:8px; }
+  .fm-scheme { background:#111113; border:1px solid #4a4a4d; border-radius:12px; padding:12px; color:#F5F5F7; min-width:0; }
+  .fm-scheme h3 { margin:0 0 2px; font-size:16px; }
+  .fm-scheme .fm-tag { font-size:11px; color:#BEBEC0; margin:0 0 10px; }
+  .fm-block { margin-top:12px; }
+  .fm-label { font-size:9px; letter-spacing:.09em; text-transform:uppercase; color:#9e9ea2; margin-bottom:5px; font-weight:600; }
+  .fm-win { background:#18181a; border:1px solid #4a4a4d; border-radius:8px; overflow:hidden; font-size:11px; }
+  .fm-top { display:flex; align-items:center; gap:6px; padding:6px; background:#111113; border-bottom:1px solid #4a4a4d; }
+  .fm-ico { width:20px; height:20px; flex:0 0 20px; display:inline-flex; align-items:center; justify-content:center; border-radius:5px; color:#BEBEC0; }
+  .fm-ico.on { background:#392735; color:#F5F5F7; }
+  .fm-crumb { flex:1; min-width:0; display:flex; align-items:center; gap:5px; white-space:nowrap; overflow:hidden; background:#18181a; border:1px solid #4a4a4d; border-radius:6px; padding:4px 7px; }
+  .fm-crumb b { color:#ca8aba; font-weight:600; }
+  .fm-crumb .sep { color:#7f7f83; }
+  .fm-btn { border:1px solid #4a4a4d; background:#27272a; color:#F5F5F7; border-radius:6px; padding:3px 7px; font-size:10px; white-space:nowrap; }
+  .fm-group { display:flex; border:1px solid #4a4a4d; border-radius:6px; overflow:hidden; background:#1e1e21; }
+  .fm-group .fm-ico, .fm-group .fm-btn { border:0; border-radius:0; background:transparent; }
+  .fm-body { display:grid; grid-template-columns:96px 1fr; min-height:96px; }
+  .fm-side { background:#111113; border-right:1px solid #4a4a4d; padding:6px 5px; }
+  .fm-side.compact { width:96px; }
+  .fm-gt { font-size:8px; text-transform:uppercase; letter-spacing:.07em; color:#7f7f83; padding:5px 5px 3px; }
+  .fm-row { display:flex; align-items:center; gap:5px; padding:4px 5px; border-radius:5px; color:#BEBEC0; white-space:nowrap; overflow:hidden; }
+  .fm-row.active { background:#392735; color:#F5F5F7; box-shadow:inset 3px 0 0 #ca8aba; }
+  .fm-row .gl { width:12px; color:#9e9ea2; }
+  .fm-files { padding:7px; color:#BEBEC0; }
+  .fm-files div { padding:3px 5px; border-radius:4px; }
+  .fm-files .sel { background:#392735; color:#F5F5F7; }
+  .fm-menu { background:#1e1e21; border:1px solid #4a4a4d; border-radius:8px; padding:4px; box-shadow:0 8px 18px #0008; }
+  .fm-mi { display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:5px; white-space:nowrap; }
+  .fm-mi.hi { background:#392735; color:#F5F5F7; }
+  .fm-mi .gl { width:13px; color:#ca8aba; }
+  .fm-mi .key { margin-left:auto; color:#9e9ea2; font-size:9px; }
+  .fm-mi.dim { color:#7f7f83; }
+  .fm-sep { border-top:1px solid #4a4a4d; margin:4px 2px; }
+  .fm-props { background:#27272a; border:1px solid #4a4a4d; border-radius:8px; padding:9px; }
+  .fm-ph { display:flex; align-items:center; gap:8px; padding-bottom:8px; border-bottom:1px solid #4a4a4d; }
+  .fm-thumb { width:34px; height:34px; border-radius:7px; background:#303033; color:#ca8aba; display:flex; align-items:center; justify-content:center; font-size:11px; }
+  .fm-ph b { display:block; font-size:12px; }
+  .fm-ph small { color:#9e9ea2; }
+  .fm-tabs { display:flex; gap:4px; margin:7px 0; }
+  .fm-tabs span { font-size:9px; padding:3px 7px; border-radius:5px; background:#1e1e21; color:#BEBEC0; }
+  .fm-tabs span.on { background:#392735; color:#F5F5F7; }
+  .fm-grid { display:grid; grid-template-columns:1fr 1fr; gap:3px 10px; font-size:10px; }
+  .fm-grid div { display:flex; justify-content:space-between; gap:6px; border-bottom:1px solid #4a4a4d; padding:2px 0; }
+  .fm-grid span:first-child { color:#9e9ea2; }
+  .fm-grid span:last-child { color:#F5F5F7; text-align:right; }
+  .fm-sec { font-size:9px; color:#ca8aba; text-transform:uppercase; letter-spacing:.06em; margin:7px 0 3px; }
+  .fm-status { margin-top:7px; font-size:9px; color:#BEBEC0; display:flex; align-items:center; gap:5px; }
+  .fm-dot { width:7px; height:7px; border-radius:50%; background:#ACD370; }
+  .fm-actions { display:flex; justify-content:flex-end; gap:5px; margin-top:8px; }
+  .fm-narrow { width:min(318px,100%); background:#18181a; border:1px solid #4a4a4d; border-radius:8px; padding:6px; font-size:10px; }
+  .fm-narrow .fm-top { padding:4px; gap:4px; }
+  .fm-ell { background:#27272a; border:1px solid #4a4a4d; border-radius:5px; padding:3px 6px; color:#BEBEC0; }
+  .fm-cap { font-size:10px; color:#9e9ea2; margin-top:5px; line-height:1.4; }
+  .fm-notes { margin-top:9px; border-top:1px solid #4a4a4d; padding-top:8px; font-size:11px; line-height:1.45; color:#BEBEC0; }
+  .fm-notes b { color:#F5F5F7; }
+  .fm-table { width:100%; border-collapse:collapse; margin-top:20px; font-size:11px; color:#F5F5F7; }
+  .fm-table th, .fm-table td { border:1px solid #4a4a4d; padding:7px 9px; text-align:left; vertical-align:top; }
+  .fm-table th { background:#27272a; color:#BEBEC0; }
+  /* Colunas nunca empilham: em tela estreita, a folha rola horizontalmente. */
+</style>
+
+<div class="fm-compare">
+
+  <!-- COMPACTA -->
+  <div class="fm-scheme option" data-choice="compacta" onclick="toggleSelect(this)">
+    <h3>1 · Compacta</h3>
+    <p class="fm-tag">Barra discreta, foco nos arquivos. Densidade alta.</p>
+
+    <div class="fm-block">
+      <div class="fm-label">Barra superior</div>
+      <div class="fm-win">
+        <div class="fm-top">
+          <span class="fm-ico">‹</span><span class="fm-ico">›</span>
+          <span class="fm-crumb"><span>~</span><span class="sep">›</span><span>Projetos</span><span class="sep">›</span><b>fm</b></span>
+          <span class="fm-ico">⌕</span><span class="fm-ico">⋮</span>
+        </div>
+        <div class="fm-body"><div class="fm-side compact"></div><div class="fm-files">
+          <div>◧ src/</div><div>◧ tests/</div><div>▤ docs/</div><div class="sel">{ } main.cpp</div><div>▤ README.md</div><div>▧ capture.png</div><div>▤ relatorio.pdf</div>
+        </div></div>
+      </div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Painel lateral</div>
+      <div class="fm-win">
+        <div class="fm-side" style="border:0;width:100%">
+          <div class="fm-gt">Lugares</div>
+          <div class="fm-row"><span class="gl">⌂</span>Início</div>
+          <div class="fm-row"><span class="gl">▤</span>Documentos</div>
+          <div class="fm-row active"><span class="gl">◧</span>Projetos</div>
+          <div class="fm-row dim"><span class="gl">▸</span>Mais…</div>
+        </div>
+      </div>
+      <div class="fm-cap">Favoritos/Recentes/Lixeira (#9) e dispositivos (#13) ficam atrás de <b>Mais…</b>. Destaque: <b>Projetos</b>, o lugar mais específico da aba.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Menu de contexto — alvo <code>main.cpp</code></div>
+      <div class="fm-menu">
+        <div class="fm-mi hi"><span class="gl">↗</span>Abrir</div>
+        <div class="fm-mi"><span class="gl">↳</span>Abrir com…<span class="key">▸</span></div>
+        <div class="fm-sep"></div>
+        <div class="fm-mi"><span class="gl">⧉</span>Copiar caminho</div>
+        <div class="fm-mi"><span class="gl">▣</span>Compactar…</div>
+        <div class="fm-sep"></div>
+        <div class="fm-mi"><span class="gl">ℹ</span>Propriedades</div>
+      </div>
+      <div class="fm-cap">Hierarquia curta; <code>Colar</code> aparece na área vazia/pasta e sempre usa <code>~/Projetos/fm</code>.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Propriedades — <code>main.cpp</code></div>
+      <div class="fm-props">
+        <div class="fm-ph"><div class="fm-thumb">{ }</div><div><b>main.cpp</b><small>Arquivo C++ · 18,4 KiB</small></div></div>
+        <div class="fm-sec">Geral</div>
+        <div class="fm-grid">
+          <div><span>Tamanho</span><span>18,4 KiB</span></div>
+          <div><span>Tipo</span><span>C++</span></div>
+          <div><span>Caminho</span><span>~/Projetos/fm</span></div>
+        </div>
+        <div class="fm-sec dim" style="color:#7f7f83">Datas · Permissões (recolhidas)</div>
+        <div class="fm-actions"><span class="fm-btn">Copiar caminho</span><span class="fm-btn">Abrir pasta pai</span></div>
+      </div>
+      <div class="fm-cap">Seções recolhidas; cálculo de pastas grandes roda em segundo plano e não bloqueia a janela.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Barra em janela estreita</div>
+      <div class="fm-narrow"><div class="fm-top">
+        <span class="fm-ico">‹</span><span class="fm-ico">›</span>
+        <span class="fm-ell">… › fm</span><span class="fm-ico">⌕</span><span class="fm-ico">⋮</span>
+      </div></div>
+      <div class="fm-cap">Ancestrais no <b>…</b>; <code>Ctrl+L</code> abre o campo de caminho; histórico por aba intacto.</div>
+    </div>
+
+    <div class="fm-notes">
+      <b>Densidade:</b> alta, poucos botões.<br>
+      <b>Comandos:</b> só os frequentes; o resto no <b>⋮</b>.<br>
+      <b>Teclado:</b> <code>Ctrl+L</code>, setas no histórico, <code>Enter</code> abre, <code>F2</code> renomeia; menus curtos = menos <code>Tab</code>s.
+    </div>
+  </div>
+
+  <!-- EQUILIBRADA -->
+  <div class="fm-scheme option" data-choice="equilibrada" onclick="toggleSelect(this)">
+    <h3>2 · Equilibrada</h3>
+    <p class="fm-tag">Operações frequentes visíveis; demais comandos agrupados.</p>
+
+    <div class="fm-block">
+      <div class="fm-label">Barra superior</div>
+      <div class="fm-win">
+        <div class="fm-top">
+          <span class="fm-ico">‹</span><span class="fm-ico">›</span><span class="fm-ico">↑</span>
+          <span class="fm-crumb"><span>~</span><span class="sep">›</span><span>Projetos</span><span class="sep">›</span><b>fm</b></span>
+          <span class="fm-group"><span class="fm-btn">Novo</span><span class="fm-btn on">Lista</span><span class="fm-ico">⋮</span></span>
+        </div>
+        <div class="fm-body"><div class="fm-side compact"></div><div class="fm-files">
+          <div>◧ src/</div><div>◧ tests/</div><div>▤ docs/</div><div class="sel">{ } main.cpp</div><div>▤ README.md</div><div>▧ capture.png</div><div>▤ relatorio.pdf</div>
+        </div></div>
+      </div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Painel lateral</div>
+      <div class="fm-win">
+        <div class="fm-side" style="border:0;width:100%">
+          <div class="fm-gt">Lugares</div>
+          <div class="fm-row"><span class="gl">⌂</span>Início</div>
+          <div class="fm-row active"><span class="gl">◧</span>Projetos</div>
+          <div class="fm-gt">Da aba</div>
+          <div class="fm-row"><span class="gl">★</span>Favoritos</div>
+          <div class="fm-row"><span class="gl">◷</span>Recentes</div>
+          <div class="fm-row"><span class="gl">⌫</span>Lixeira</div>
+          <div class="fm-gt">Dispositivos</div>
+          <div class="fm-row"><span class="gl">▣</span>Disco local</div>
+        </div>
+      </div>
+      <div class="fm-cap">Três grupos legíveis com os mesmos ícones. <b>Projetos</b> segue em destaque; Favoritos/Recentes/Lixeira coordenados com #9.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Menu de contexto — alvo <code>main.cpp</code></div>
+      <div class="fm-menu">
+        <div class="fm-mi hi"><span class="gl">↗</span>Abrir<span class="key">Enter</span></div>
+        <div class="fm-mi"><span class="gl">↳</span>Abrir com…<span class="key">▸</span></div>
+        <div class="fm-sep"></div>
+        <div class="fm-mi"><span class="gl">⧉</span>Copiar caminho<span class="key">Ctrl+C</span></div>
+        <div class="fm-mi"><span class="gl">✎</span>Renomear<span class="key">F2</span></div>
+        <div class="fm-mi"><span class="gl">▣</span>Compactar…</div>
+        <div class="fm-sep"></div>
+        <div class="fm-mi"><span class="gl">ℹ</span>Propriedades<span class="key">Alt+Enter</span></div>
+      </div>
+      <div class="fm-cap">Separadores por grupo e atalhos à direita. <code>Colar</code> segue na pasta da aba, não no arquivo clicado.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Propriedades — <code>main.cpp</code></div>
+      <div class="fm-props">
+        <div class="fm-ph"><div class="fm-thumb">{ }</div><div><b>main.cpp</b><small>Arquivo C++ · 18,4 KiB</small></div></div>
+        <div class="fm-tabs"><span class="on">Geral</span><span>Datas</span><span>Permissões</span></div>
+        <div class="fm-grid">
+          <div><span>Tamanho</span><span>18,4 KiB</span></div>
+          <div><span>Tipo</span><span>C++</span></div>
+          <div><span>Caminho</span><span>~/Projetos/fm</span></div>
+          <div><span>Modificado</span><span>27 nov, 18:02</span></div>
+        </div>
+        <div class="fm-status"><span class="fm-dot"></span>Análise em segundo plano concluída</div>
+        <div class="fm-actions"><span class="fm-btn">Copiar caminho</span><span class="fm-btn">Abrir pasta pai</span></div>
+      </div>
+      <div class="fm-cap">Abas curtas evitam rolagem; ícone/miniatura e ações aparecem sempre.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Barra em janela estreita</div>
+      <div class="fm-narrow"><div class="fm-top">
+        <span class="fm-ico">‹</span><span class="fm-ico">›</span>
+        <span class="fm-ell">~ › … › fm</span>
+        <span class="fm-group"><span class="fm-btn">Lista</span><span class="fm-ico">⋮</span></span>
+      </div></div>
+      <div class="fm-cap">Caminho perde o meio, mantém ancestral inicial e nome atual; <b>Novo</b> vai para <b>⋮</b>. <code>Ctrl+L</code> expande o campo.</div>
+    </div>
+
+    <div class="fm-notes">
+      <b>Densidade:</b> média, legendas nos botões.<br>
+      <b>Comandos:</b> Novo/ListaVisão visíveis; o resto no <b>⋮</b>.<br>
+      <b>Teclado:</b> atalhos escritos no menu; abas das propriedades navegáveis com <code>Ctrl+Tab</code>.
+    </div>
+  </div>
+
+  <!-- AVANÇADA -->
+  <div class="fm-scheme option" data-choice="avancada" onclick="toggleSelect(this)">
+    <h3>3 · Avançada</h3>
+    <p class="fm-tag">Mais controles acessíveis e personalização da interface.</p>
+
+    <div class="fm-block">
+      <div class="fm-label">Barra superior</div>
+      <div class="fm-win">
+        <div class="fm-top">
+          <span class="fm-ico">‹</span><span class="fm-ico">›</span><span class="fm-ico">↑</span>
+          <span class="fm-crumb"><b>~/Projetos/fm</b></span>
+          <span class="fm-group"><span class="fm-btn">+ Novo</span><span class="fm-btn on">Lista</span><span class="fm-btn">Grade</span><span class="fm-btn">Prévia</span><span class="fm-ico">⋮</span></span>
+        </div>
+        <div class="fm-body"><div class="fm-side compact"></div><div class="fm-files">
+          <div>◧ src/</div><div>◧ tests/</div><div>▤ docs/</div><div class="sel">{ } main.cpp</div><div>▤ README.md</div><div>▧ capture.png</div><div>▤ relatorio.pdf</div>
+        </div></div>
+      </div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Painel lateral</div>
+      <div class="fm-win">
+        <div class="fm-side" style="border:0;width:100%">
+          <div class="fm-gt">Lugares</div>
+          <div class="fm-row"><span class="gl">⌂</span>Início</div>
+          <div class="fm-row active"><span class="gl">◧</span>Projetos</div>
+          <div class="fm-row"><span class="gl">▤</span>Documentos</div>
+          <div class="fm-gt">Da aba · #9</div>
+          <div class="fm-row"><span class="gl">★</span>Favoritos</div>
+          <div class="fm-row"><span class="gl">◷</span>Recentes</div>
+          <div class="fm-row"><span class="gl">⌫</span>Lixeira</div>
+          <div class="fm-gt">Dispositivos · #13</div>
+          <div class="fm-row"><span class="gl">▣</span>Disco local</div>
+          <div class="fm-row"><span class="gl">◇</span>ISO mounted</div>
+          <div class="fm-gt">Interface</div>
+          <div class="fm-row"><span class="gl">⚙</span>Personalizar…</div>
+        </div>
+      </div>
+      <div class="fm-cap">Todos os grupos abertos e entrada para densidade, colunas, ícones e prévia. Destaque permanece no lugar mais específico.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Menu de contexto — alvo <code>main.cpp</code></div>
+      <div class="fm-menu">
+        <div class="fm-mi hi"><span class="gl">↗</span>Abrir<span class="key">Enter</span></div>
+        <div class="fm-mi"><span class="gl">↳</span>Abrir com…<span class="key">▸</span></div>
+        <div class="fm-mi"><span class="gl">⌘</span>Abrir no terminal<span class="key">Ctrl+T</span></div>
+        <div class="fm-sep"></div>
+        <div class="fm-mi"><span class="gl">⧉</span>Copiar caminho<span class="key">Ctrl+Shift+C</span></div>
+        <div class="fm-mi"><span class="gl">✎</span>Renomear<span class="key">F2</span></div>
+        <div class="fm-mi"><span class="gl">▸</span>Compactar…<span class="key">▸</span></div>
+        <div class="fm-mi dim"><span class="gl">↧</span>Colar em ~/Projetos/fm<span class="key">Ctrl+V</span></div>
+        <div class="fm-sep"></div>
+        <div class="fm-mi"><span class="gl">◫</span>Exibir<span class="key">▸</span></div>
+        <div class="fm-mi"><span class="gl">ℹ</span>Propriedades<span class="key">Alt+Enter</span></div>
+      </div>
+      <div class="fm-cap">Hierarquia completa com submenus, ícones e atalhos; <code>Colar</code> nomeia explicitamente a pasta da aba.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Propriedades — <code>main.cpp</code></div>
+      <div class="fm-props">
+        <div class="fm-ph"><div class="fm-thumb">{ }</div><div><b>main.cpp</b><small>Arquivo C++ · 18,4 KiB</small></div></div>
+        <div style="display:grid;grid-template-columns:64px 1fr;gap:8px;margin-top:7px">
+          <div style="font-size:9px;color:#ca8aba">Geral ✓<br>Datas<br>Permissões</div>
+          <div>
+            <div class="fm-grid">
+              <div><span>Tamanho</span><span>18,4 KiB</span></div>
+              <div><span>Tipo</span><span>C++</span></div>
+              <div><span>Caminho</span><span>~/Projetos/fm</span></div>
+              <div><span>Criado</span><span>26 nov, 11:40</span></div>
+              <div><span>Modificado</span><span>27 nov, 18:02</span></div>
+              <div><span>Permissões</span><span>rw-r--r--</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="fm-status"><span class="fm-dot"></span>Varredura em segundo plano · 0 pastas · sem bloqueio</div>
+        <div class="fm-actions"><span class="fm-btn">Copiar caminho</span><span class="fm-btn">Abrir pasta pai</span></div>
+      </div>
+      <div class="fm-cap">Todas as seções visíveis; para imagem, miniatura substitui o ícone; para pasta, tamanho/contagem aparecem assíncronos.</div>
+    </div>
+
+    <div class="fm-block">
+      <div class="fm-label">Barra em janela estreita</div>
+      <div class="fm-narrow"><div class="fm-top">
+        <span class="fm-ico">‹</span><span class="fm-ico">›</span>
+        <span class="fm-ell">~/Projetos/fm ▾</span>
+        <span class="fm-group"><span class="fm-btn on">Lista</span><span class="fm-ico">⋮</span></span>
+      </div></div>
+      <div class="fm-cap">Caminho vira um botão único: clique mostra ancestrais; <code>Ctrl+L</code> abre o campo. Prévia/Painel/Grade migram para <b>⋮</b>.</div>
+    </div>
+
+    <div class="fm-notes">
+      <b>Densidade:</b> baixa/média, mais espaço por controle.<br>
+      <b>Comandos:</b> quase tudo visível; personalização explícita.<br>
+      <b>Teclado:</b> atalhos em toda parte; <code>Ctrl+Tab</code> entre seções; botões com <code>Alt</code> configuráveis.
+    </div>
+  </div>
+</div>
+
+<table class="fm-table">
+  <thead><tr><th>Eixo</th><th>Compacta</th><th>Equilibrada</th><th>Avançada</th></tr></thead>
+  <tbody>
+    <tr><td>Densidade</td><td>Alta: ícones, linhas curtas, painel mínimo.</td><td>Média: rótulos nos botões, três grupos na lateral.</td><td>Mais espaçosa: controles e seções explícitos.</td></tr>
+    <tr><td>Comandos visíveis</td><td>Navegação + busca; resto no <b>⋮</b>.</td><td>Novo e visualização sempre à mão; resto agrupado.</td><td>Novo, Lista/Grade, Prévia e Painel sempre à mão.</td></tr>
+    <tr><td>Menu de contexto</td><td>5 itens, sem atalhos.</td><td>7 itens, separadores e atalhos.</td><td>10 itens, submenus e atalhos completos.</td></tr>
+    <tr><td>Propriedades</td><td>Seções recolhidas.</td><td>Abas Geral/Datas/Permissões.</td><td>Seções simultâneas e estado da varredura.</td></tr>
+    <tr><td>Janela estreita</td><td><code>… › fm</code>, só volta/avanço + busca.</td><td><code>~ › … › fm</code>, Lista e <b>⋮</b>.</td><td>Caminho botão único com ancestrais; resto no <b>⋮</b>.</td></tr>
+    <tr><td>Teclado</td><td>Menos paradas de <code>Tab</code>; <code>Ctrl+L</code> e histórico por aba.</td><td>Atalhos impressos no menu; abas com <code>Ctrl+Tab</code>.</td><td>Atalhos em todos os níveis + preferências persistentes.</td></tr>
+  </tbody>
+</table>
+
+<p class="subtitle" style="margin-top:14px">Cenário, paleta e seleção são idênticos nas três colunas. A implementação só começa após sua escolha.</p>
