@@ -214,7 +214,8 @@ int visibleBreadcrumbButtons(QWidget *window)
 bool samePreferences(const UiPreferences &a, const UiPreferences &b)
 {
     return a.preset == b.preset && a.density == b.density && a.iconSize == b.iconSize
-           && a.columns == b.columns && a.preview == b.preview;
+           && a.columns == b.columns && a.preview == b.preview && a.gridSize == b.gridSize
+           && a.gridDate == b.gridDate;
 }
 
 QListWidgetItem *findPlace(QListWidget *places, const QString &label)
@@ -254,6 +255,7 @@ private slots:
     void switchPresetResetsManualAdjustments();
     void restoreDefaultsPersistsAfterRestart();
     void previewTogglePersistsAfterRestart();
+    void gridLegendActionsPersistAndApplyToTabs();
     void customizeActionOpensDialog();
     void customizeDialogPersistsManualAdjustments();
     void keyboardOpensMenusAt320InEveryPreset();
@@ -1277,6 +1279,70 @@ void MainWindowTest::previewTogglePersistsAfterRestart()
     QVERIFY(restarted.uiPreferences().preview);
     QAction *preview = findAction(&restarted, QStringLiteral("Painel de pré-visualização"));
     QVERIFY(preview && preview->isChecked());
+}
+
+void MainWindowTest::gridLegendActionsPersistAndApplyToTabs()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    {
+        MainWindow w(home);
+        auto *viewMenu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+        auto *size = w.findChild<QAction *>(QStringLiteral("gridSizeAction"));
+        auto *date = w.findChild<QAction *>(QStringLiteral("gridDateAction"));
+        auto *tab = w.findChild<FileTab *>();
+        QVERIFY(viewMenu && size && date && tab);
+        QVERIFY(size->isCheckable());
+        QVERIFY(date->isCheckable());
+        const QList<QAction *> actions = viewMenu->actions();
+        QVERIFY(actions.contains(size) && actions.contains(date));
+        QCOMPARE(actions.value(actions.size() - 2), size);
+        QCOMPARE(actions.last(), date);
+        QVERIFY(!size->isChecked() && !date->isChecked());
+        QVERIFY(!tab->gridSize() && !tab->gridDate());
+
+        size->trigger();
+        QVERIFY(size->isChecked());
+        QVERIFY(w.uiPreferences().gridSize);
+        QVERIFY(tab->gridSize());
+        QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
+        QVERIFY(settings.value(QStringLiteral("ui/gridSize")).toBool());
+
+        date->trigger();
+        QVERIFY(date->isChecked());
+        QVERIFY(w.uiPreferences().gridDate);
+        QVERIFY(tab->gridDate());
+        QVERIFY(settings.value(QStringLiteral("ui/gridDate")).toBool());
+        w.close();
+    }
+
+    MainWindow restarted(home);
+    auto *size = restarted.findChild<QAction *>(QStringLiteral("gridSizeAction"));
+    auto *date = restarted.findChild<QAction *>(QStringLiteral("gridDateAction"));
+    auto *tab = restarted.findChild<FileTab *>();
+    QVERIFY(size && date && tab);
+    QVERIFY(size->isChecked() && date->isChecked());
+    QVERIFY(restarted.uiPreferences().gridSize && restarted.uiPreferences().gridDate);
+    QVERIFY(tab->gridSize() && tab->gridDate());
+
+    auto *interfaceMenu = restarted.findChild<QMenu *>(QStringLiteral("interfaceMenu"));
+    QVERIFY(interfaceMenu);
+    QAction *restore = menuAction(interfaceMenu, QStringLiteral("Restaurar padrões"));
+    QVERIFY(restore);
+    restore->trigger();
+    QVERIFY2(samePreferences(restarted.uiPreferences(), defaultUiPreferences(UiPreset::Balanced)),
+             "Restaurar padrões deve zerar gridSize/gridDate");
+    QVERIFY(!size->isChecked() && !date->isChecked());
+    QVERIFY(!tab->gridSize() && !tab->gridDate());
+    QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
+    QVERIFY(settings.contains(QStringLiteral("ui/gridSize")));
+    QVERIFY(settings.contains(QStringLiteral("ui/gridDate")));
+    QVERIFY(!settings.value(QStringLiteral("ui/gridSize")).toBool());
+    QVERIFY(!settings.value(QStringLiteral("ui/gridDate")).toBool());
 }
 
 void MainWindowTest::customizeActionOpensDialog()
