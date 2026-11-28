@@ -3,10 +3,15 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFontMetrics>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QMenu>
@@ -21,6 +26,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <QVector>
 
 namespace {
@@ -46,6 +52,7 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     setCentralWidget(m_tabs);
 
     auto *tb = addToolBar(tr("Navegação"));
+    m_toolbar = tb;
     tb->setMovable(false);
     tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
@@ -104,11 +111,31 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_zoomOutAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
     m_zoomResetAct = tb->addAction(QIcon::fromTheme("zoom-original"), tr("Zoom original"));
     m_zoomResetAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
-    QAction *newTab = tb->addAction(QIcon::fromTheme("tab-new"), tr("Nova aba (Ctrl+T)"));
-    newTab->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
+    m_newTabAct = tb->addAction(QIcon::fromTheme("tab-new"), tr("Nova aba (Ctrl+T)"));
+    m_newTabAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
+
+    m_moreAct = new QAction(style()->standardIcon(QStyle::SP_ToolBarHorizontalExtensionButton),
+                            QString(), this);
+    m_moreAct->setObjectName(QStringLiteral("moreMenu"));
+    m_moreAct->setToolTip(tr("Mais opções"));
+    auto *moreMenu = new QMenu(this);
+    moreMenu->setObjectName(QStringLiteral("moreMenu"));
+    m_moreAct->setMenu(moreMenu);
+    tb->addAction(m_moreAct);
+
+    auto *interfaceMenu = moreMenu->addMenu(tr("Interface"));
+    interfaceMenu->setObjectName(QStringLiteral("interfaceMenu"));
+    m_presetCompactAct = interfaceMenu->addAction(tr("Compacta"));
+    m_presetBalancedAct = interfaceMenu->addAction(tr("Equilibrada"));
+    m_presetAdvancedAct = interfaceMenu->addAction(tr("Avançada"));
+    for (QAction *a : {m_presetCompactAct, m_presetBalancedAct, m_presetAdvancedAct})
+        a->setCheckable(true);
+    m_restoreDefaultsAct = interfaceMenu->addAction(tr("Restaurar padrões"));
+    QAction *customizeAct = interfaceMenu->addAction(tr("Personalizar…"));
+    connect(customizeAct, &QAction::triggered, this, &MainWindow::openCustomizeDialog);
 
     for (QAction *a : {m_back, m_forward, m_up, m_iconsAct, m_previewAct, m_hiddenAct,
-                       m_zoomInAct, m_zoomOutAct, m_zoomResetAct, newTab})
+                       m_zoomInAct, m_zoomOutAct, m_zoomResetAct, m_newTabAct})
         addAction(a); // garante que os atalhos funcionem em toda a janela
 
     auto *focusPath = new QAction(this);
@@ -131,6 +158,9 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     connect(m_previewAct, &QAction::toggled, this, [this](bool on) {
         for (int i = 0; i < m_tabs->count(); ++i)
             static_cast<FileTab *>(m_tabs->widget(i))->setPreviewVisible(on);
+        m_ui.preview = on;
+        QSettings s(QStringLiteral("fm"), QStringLiteral("fm"));
+        s.setValue(QStringLiteral("ui/preview"), on);
     });
     connect(m_hiddenAct, &QAction::toggled, this, [this](bool on) {
         for (int i = 0; i < m_tabs->count(); ++i)
@@ -163,12 +193,26 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     connect(m_tabs, &QTabWidget::currentChanged, this, [this] { endPathEdit(); });
 
     // "Nova aba" abre na pasta da aba atual
-    connect(newTab, &QAction::triggered, this, [this] {
+    connect(m_newTabAct, &QAction::triggered, this, [this] {
         const FileTab *t = currentTab();
         addTab(t ? t->currentPath() : QDir::homePath());
     });
 
+    auto choosePreset = [this](UiPreset preset) { applyUiPreferences(defaultUiPreferences(preset)); };
+    connect(m_presetCompactAct, &QAction::triggered, this,
+            [choosePreset] { choosePreset(UiPreset::Compact); });
+    connect(m_presetBalancedAct, &QAction::triggered, this,
+            [choosePreset] { choosePreset(UiPreset::Balanced); });
+    connect(m_presetAdvancedAct, &QAction::triggered, this,
+            [choosePreset] { choosePreset(UiPreset::Advanced); });
+    connect(m_restoreDefaultsAct, &QAction::triggered, this, [this, choosePreset] {
+        choosePreset(UiPreset::Balanced);
+        statusBar()->showMessage(tr("Padrões restaurados"));
+    });
+
+    m_ui = loadUiPreferences(s);
     addTab(startPath);
+    applyUiPreferences(m_ui);
     statusBar()->showMessage(QString());
 }
 
@@ -180,6 +224,7 @@ FileTab *MainWindow::currentTab() const
 FileTab *MainWindow::addTab(const QString &path)
 {
     auto *tab = new FileTab(path);
+    tab->applyUiPreferences(m_ui);
     tab->setViewActions(m_iconsAct, m_previewAct, m_hiddenAct,
                         m_zoomInAct, m_zoomOutAct, m_zoomResetAct);
     tab->setIconMode(m_iconsAct->isChecked());
@@ -190,6 +235,7 @@ FileTab *MainWindow::addTab(const QString &path)
     const int idx = m_tabs->addTab(tab, QDir(path).dirName());
     m_tabs->setCurrentIndex(idx);
 
+    connect(tab, &FileTab::customizeRequested, this, &MainWindow::openCustomizeDialog);
     connect(tab, &FileTab::titleChanged, this, [this, tab](const QString &t) {
         const int i = m_tabs->indexOf(tab);
         if (i >= 0)
@@ -243,6 +289,133 @@ void MainWindow::syncToolbar()
     m_forward->setEnabled(t->canGoForward());
     m_pathEdit->setText(t->currentPath());
     setWindowTitle(QStringLiteral("%1 — fm").arg(t->currentPath()));
+}
+
+void MainWindow::syncToolbarActions()
+{
+    if (!m_toolbar || !m_moreAct)
+        return;
+
+    const bool narrow = width() < 720;
+    const bool compact = m_ui.preset == UiPreset::Compact || narrow;
+    const bool showView = !compact;
+    const bool showNew = m_ui.preset != UiPreset::Compact && !narrow;
+    const bool showExtras = m_ui.preset == UiPreset::Advanced && !narrow;
+
+    struct Rule { QAction *action; bool visible; };
+    const Rule rules[] = {
+        {m_iconsAct, showView}, {m_previewAct, showExtras}, {m_hiddenAct, showExtras},
+        {m_zoomInAct, showExtras}, {m_zoomOutAct, showExtras}, {m_zoomResetAct, showExtras},
+        {m_newTabAct, showNew},
+    };
+    QMenu *menu = m_moreAct->menu();
+
+    for (const Rule &rule : rules) {
+        if (!rule.action)
+            continue;
+        const bool inToolbar = m_toolbar->actions().contains(rule.action);
+        if (rule.visible) {
+            menu->removeAction(rule.action);
+            if (!inToolbar)
+                m_toolbar->insertAction(m_moreAct, rule.action);
+        } else {
+            if (inToolbar)
+                m_toolbar->removeAction(rule.action);
+            if (!menu->actions().contains(rule.action))
+                menu->addAction(rule.action);
+        }
+    }
+}
+
+void MainWindow::applyUiPreferences(const UiPreferences &prefs)
+{
+    m_ui = prefs;
+    switch (prefs.preset) {
+    case UiPreset::Compact:
+        m_breadcrumbLimit = 2;
+        break;
+    case UiPreset::Balanced:
+        m_breadcrumbLimit = 4;
+        break;
+    case UiPreset::Advanced:
+        m_breadcrumbLimit = -1;
+        break;
+    }
+
+    m_presetCompactAct->setChecked(prefs.preset == UiPreset::Compact);
+    m_presetBalancedAct->setChecked(prefs.preset == UiPreset::Balanced);
+    m_presetAdvancedAct->setChecked(prefs.preset == UiPreset::Advanced);
+    m_previewAct->setChecked(prefs.preview);
+
+    for (int i = 0; i < m_tabs->count(); ++i)
+        static_cast<FileTab *>(m_tabs->widget(i))->applyUiPreferences(prefs);
+    m_zoomResetAct->trigger();
+
+    syncToolbarActions();
+    rebuildBreadcrumb();
+
+    QSettings s(QStringLiteral("fm"), QStringLiteral("fm"));
+    saveUiPreferences(s, prefs);
+}
+
+UiPreferences MainWindow::uiPreferences() const
+{
+    return m_ui;
+}
+
+void MainWindow::openCustomizeDialog()
+{
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("customizeDialog"));
+    dialog->setWindowTitle(tr("Personalizar interface"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    auto *root = new QVBoxLayout(dialog);
+    auto *form = new QFormLayout;
+    auto *density = new QComboBox(dialog);
+    density->setObjectName(QStringLiteral("customDensity"));
+    density->addItems({ tr("Compacta"), tr("Equilibrada"), tr("Avançada") });
+    density->setCurrentIndex(m_ui.density);
+    form->addRow(tr("Densidade da lista"), density);
+
+    auto *columns = new QComboBox(dialog);
+    columns->setObjectName(QStringLiteral("customColumns"));
+    const QStringList names { tr("Nome"), tr("Tamanho"), tr("Tipo"), tr("Modificação") };
+    for (int count = 1; count <= names.size(); ++count)
+        columns->addItem(names.mid(0, count).join(QStringLiteral(", ")));
+    columns->setCurrentIndex(qBound(0, m_ui.columns.size() - 1, names.size() - 1));
+    form->addRow(tr("Colunas visíveis"), columns);
+
+    auto *iconSize = new QComboBox(dialog);
+    iconSize->setObjectName(QStringLiteral("customIconSize"));
+    iconSize->addItems({ tr("32 px"), tr("48 px"), tr("64 px") });
+    iconSize->setCurrentIndex(m_ui.iconSize == 32 ? 0 : (m_ui.iconSize == 64 ? 2 : 1));
+    form->addRow(tr("Tamanho dos ícones"), iconSize);
+
+    auto *preview = new QCheckBox(dialog);
+    preview->setObjectName(QStringLiteral("customPreview"));
+    preview->setChecked(m_ui.preview);
+    form->addRow(tr("Painel de pré-visualização"), preview);
+    root->addLayout(form);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+    root->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::accepted, dialog, [this, dialog, density, columns,
+                                                           iconSize, preview] {
+        UiPreferences prefs = m_ui;
+        prefs.density = density->currentIndex();
+        static const int sizes[] = { 32, 48, 64 };
+        prefs.iconSize = sizes[qBound(0, iconSize->currentIndex(), 2)];
+        QStringList selected;
+        for (int i = 0; i <= columns->currentIndex(); ++i)
+            selected << QString::number(i);
+        prefs.columns = selected;
+        prefs.preview = preview->isChecked();
+        applyUiPreferences(prefs);
+        dialog->accept();
+    });
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    dialog->show();
 }
 
 void MainWindow::beginPathEdit()
@@ -317,6 +490,13 @@ void MainWindow::rebuildBreadcrumb()
 
     QVector<bool> visible(buttons.size(), true);
     bool overflowNeeded = false;
+    // Limite do preset: mantém os segmentos mais próximos do atual (o último nunca sai).
+    if (m_breadcrumbLimit > 0 && buttons.size() > m_breadcrumbLimit) {
+        const int first = buttons.size() - m_breadcrumbLimit;
+        for (int i = 0; i < first; ++i)
+            visible[i] = false;
+        overflowNeeded = true;
+    }
     auto applyVisibility = [&] {
         for (int i = 0; i < buttons.size(); ++i)
             buttons[i]->setVisible(visible[i]);
@@ -378,6 +558,7 @@ void MainWindow::rebuildBreadcrumb()
 void MainWindow::resizeEvent(QResizeEvent *e)
 {
     QMainWindow::resizeEvent(e);
+    syncToolbarActions();
     rebuildBreadcrumb();
 }
 

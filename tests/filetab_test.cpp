@@ -7,8 +7,10 @@
 #include <QClipboard>
 #include <QDir>
 #include <QFileSystemModel>
+#include <QHash>
 #include <QHeaderView>
 #include <QImage>
+#include <QItemSelectionModel>
 #include <QElapsedTimer>
 #include <QInputDialog>
 #include <QLineEdit>
@@ -22,12 +24,15 @@
 #include <QMenu>
 #include <QPointer>
 #include <QSignalSpy>
+#include <QStyleOptionViewItem>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeView>
 
 #include "FileTab.h"
+#include "PropertiesDialog.h"
 #include "ThumbnailProxy.h"
+#include "UiPreferences.h"
 
 namespace {
 
@@ -236,6 +241,35 @@ QStringList captureContextTargets(FileTab &tab, QAbstractItemView *view, const Q
     return targets;
 }
 
+struct MenuSnapshot {
+    QStringList labels;
+    QString pasteData;
+};
+
+MenuSnapshot captureMenuSnapshot(FileTab &tab, QTreeView *view, const QModelIndex &index)
+{
+    MenuSnapshot snap;
+    setContextMenuHookForTests([&snap](QMenu *menu, const QStringList &) {
+        QTimer::singleShot(0, [] { closePopups(); });
+        for (QAction *a : menu->actions()) {
+            snap.labels << a->text();
+            if (a->objectName() == QStringLiteral("pasteAction"))
+                snap.pasteData = a->data().toString();
+        }
+    });
+    const auto reset = qScopeGuard([] { setContextMenuHookForTests({}); });
+    openContextMenu(view, index);
+    return snap;
+}
+
+QStringList stripShortcuts(const QStringList &labels)
+{
+    QStringList out;
+    for (const QString &label : labels)
+        out << label.section(QLatin1Char('\t'), 0, 0);
+    return out;
+}
+
 QString contextTestRoot(QTemporaryDir &dir)
 {
     const QString root = QDir(dir.path()).filePath(QStringLiteral("root"));
@@ -341,6 +375,13 @@ private slots:
     void viewRefinementsAreApplied();
     void zoomResetRestoresInitialSizes();
     void sizeColumnCellsAreRightAligned();
+    void presetChangesIconAndColumns();
+    void densityChangesRowHeight();
+    void previewFollowsPreferences();
+    void sectionHeadersAreNotPlaces();
+    void menuShortcutsByPreset();
+    void menuTargetsUnchanged();
+    void nonModalFromMenu();
 };
 
 void FileTabTest::navigationBackForwardUp()
@@ -854,7 +895,7 @@ void FileTabTest::contextMenuCompositionByTarget()
     auto capture = [view](const QModelIndex &index) {
         Snapshot snap;
         setContextMenuHookForTests([&snap](QMenu *menu, const QStringList &) {
-            snap.labels = directMenuLabels(menu);
+            snap.labels = stripShortcuts(directMenuLabels(menu));
             QAction *paste = actionNamed(menu, QStringLiteral("Colar"));
             snap.pasteEnabled = paste && paste->isEnabled();
             QTimer::singleShot(0, [] { closePopups(); });
@@ -1688,31 +1729,18 @@ void FileTabTest::propertiesOfCurrentFolder()
     QTRY_VERIFY_WITH_TIMEOUT(findRowNamed(view, QStringLiteral("pasta-de-testes")).isValid(), 3000);
     QVERIFY(tab.goTo(sub));
 
-    bool seen = false;
-    QString seenText;
-    const auto inspect = [&seen, &seenText] {
-        QMessageBox *box = qobject_cast<QMessageBox *>(qApp->activeModalWidget());
-        if (!box) {
-            for (QWidget *w : qApp->topLevelWidgets())
-                if ((box = qobject_cast<QMessageBox *>(w)))
-                    break;
-        }
-        if (!box) {
-            qWarning("QMessageBox de propriedades não encontrado");
-            return;
-        }
-        seen = true;
-        seenText = box->text();
-        QTest::keyClick(box, Qt::Key_Return);
-    };
+    QPointer<PropertiesDialog> dialog;
+    setPropertiesDialogHookForTests([&dialog](PropertiesDialog *d) { dialog = d; });
+    const auto reset = qScopeGuard([] { setPropertiesDialogHookForTests({}); });
 
-    runMenuAction(QStringList{QStringLiteral("Propriedades da pasta")},
-                  [inspect] { QTimer::singleShot(0, inspect); });
+    runMenuAction(QStringList{QStringLiteral("Propriedades da pasta")});
     openContextMenu(view);
 
-    QVERIFY2(seen, "a ação Propriedades da pasta deve abrir o diálogo");
-    QVERIFY2(seenText.contains(QStringLiteral("pasta-de-testes")),
-             qPrintable(QStringLiteral("texto: %1").arg(seenText)));
+    QVERIFY2(dialog, "a ação Propriedades da pasta deve abrir o diálogo");
+    QCOMPARE(dialog->path(), QDir::cleanPath(sub));
+    QVERIFY2(dialog->windowTitle().contains(QStringLiteral("pasta-de-testes")),
+             qPrintable(dialog->windowTitle()));
+    dialog->close();
 }
 
 void FileTabTest::refreshRereadsWithoutWatcherAndKeepsHistory()
@@ -2454,6 +2482,247 @@ void FileTabTest::sizeColumnCellsAreRightAligned()
     QVERIFY2(!sizeIndex.data(Qt::DisplayRole).toString().isEmpty(), "celula de tamanho vazia");
     QVERIFY2(sizeIndex.data(Qt::TextAlignmentRole).toInt() & Qt::AlignRight,
              "valor de tamanho precisa estar alinhado a direita");
+}
+
+void FileTabTest::presetChangesIconAndColumns()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (int i = 0; i < 5; ++i) {
+        QFile f(QDir(dir.path()).filePath(QStringLiteral("arquivo-%1.txt").arg(i)));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+    }
+
+    FileTab tab(dir.path());
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Compact));
+    QCOMPARE(icons->iconSize(), QSize(32, 32));
+    QVERIFY(!tree->header()->isSectionHidden(0));
+    for (int col = 1; col <= 3; ++col)
+        QVERIFY(tree->header()->isSectionHidden(col));
+    QVERIFY(icons->gridSize().width() > icons->iconSize().width());
+
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Advanced));
+    QCOMPARE(icons->iconSize(), QSize(64, 64));
+    for (int col = 0; col <= 3; ++col)
+        QVERIFY(!tree->header()->isSectionHidden(col));
+}
+
+void FileTabTest::densityChangesRowHeight()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QFile f(QDir(dir.path()).filePath(QStringLiteral("linha.txt")));
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.close();
+
+    FileTab tab(dir.path());
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QTRY_VERIFY_WITH_TIMEOUT(tree->model()->rowCount(tree->rootIndex()) >= 1, 3000);
+    const QModelIndex index = tree->model()->index(0, 0, tree->rootIndex());
+    QVERIFY(index.isValid());
+    const auto rowHeight = [&] {
+        return tree->itemDelegate()->sizeHint(QStyleOptionViewItem(), index).height();
+    };
+
+    UiPreferences compact = defaultUiPreferences(UiPreset::Compact);
+    tab.applyUiPreferences(compact);
+    const int compactHeight = rowHeight();
+    UiPreferences advanced = defaultUiPreferences(UiPreset::Advanced);
+    tab.applyUiPreferences(advanced);
+    QVERIFY2(rowHeight() > compactHeight, "densidade alta e baixa precisam produzir alturas distintas");
+}
+
+void FileTabTest::previewFollowsPreferences()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+    auto *preview = tab.findChild<QWidget *>(QStringLiteral("previewPanel"));
+    QVERIFY(preview);
+
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Advanced));
+    QVERIFY(!preview->isHidden());
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Balanced));
+    QVERIFY(preview->isHidden());
+}
+
+void FileTabTest::sectionHeadersAreNotPlaces()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString parent = dir.path();
+    const QString child = QDir(parent).filePath(QStringLiteral("filho"));
+    QVERIFY(QDir(parent).mkdir(QStringLiteral("filho")));
+    setPlacesForTests(QStringList{parent, child});
+    auto restore = qScopeGuard([] { setPlacesForTests(QStringList{}); });
+
+    FileTab tab(child);
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Balanced));
+    QVERIFY(tab.goTo(child));
+
+    auto *places = tab.findChild<QListWidget *>(QStringLiteral("places"));
+    QVERIFY(places);
+    QVERIFY(places->currentItem());
+    QCOMPARE(places->currentItem()->data(Qt::UserRole).toString(), child);
+    QVERIFY(!places->currentItem()->data(FileTab::PlaceSectionRole).isValid());
+
+    int sections = 0;
+    for (int i = 0; i < places->count(); ++i)
+        if (places->item(i)->data(FileTab::PlaceSectionRole).isValid())
+            ++sections;
+    QVERIFY2(sections >= 2, "grupos da lateral precisam existir como seções");
+}
+
+void FileTabTest::menuShortcutsByPreset()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QFile file(QDir(dir.path()).filePath(QStringLiteral("alpha.txt")));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.close();
+
+    FileTab tab(dir.path());
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QTRY_VERIFY_WITH_TIMEOUT(tree->model()->rowCount(tree->rootIndex()) >= 1, 3000);
+    const QModelIndex row = findRowNamed(tree, QStringLiteral("alpha.txt"));
+    QVERIFY(row.isValid());
+
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Compact));
+    const MenuSnapshot compact = captureMenuSnapshot(tab, tree, row);
+    for (const QString &label : compact.labels)
+        QVERIFY2(!label.contains(QLatin1Char('\t')), qPrintable("atalho na Compacta: " + label));
+
+    for (UiPreset preset : {UiPreset::Balanced, UiPreset::Advanced}) {
+        tab.applyUiPreferences(defaultUiPreferences(preset));
+        const MenuSnapshot snap = captureMenuSnapshot(tab, tree, row);
+        bool openHint = false;
+        bool propsHint = false;
+        for (const QString &label : snap.labels) {
+            if (label.startsWith(QStringLiteral("Abrir")))
+                openHint = openHint || label.endsWith(QStringLiteral("\tEnter"));
+            if (label.startsWith(QStringLiteral("Propriedades")))
+                propsHint = propsHint || label.endsWith(QStringLiteral("\tAlt+Enter"));
+        }
+        QVERIFY2(openHint, "Abrir sem dica de atalho");
+        QVERIFY2(propsHint, "Propriedades sem dica de atalho");
+    }
+}
+
+void FileTabTest::menuTargetsUnchanged()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QFile file(QDir(dir.path()).filePath(QStringLiteral("alpha.txt")));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.close();
+    QVERIFY(QDir(dir.path()).mkdir(QStringLiteral("pasta")));
+
+    FileTab tab(dir.path());
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QTRY_VERIFY_WITH_TIMEOUT(tree->model()->rowCount(tree->rootIndex()) >= 2, 3000);
+    QVERIFY(findRowNamed(tree, QStringLiteral("alpha.txt")).isValid());
+    QVERIFY(findRowNamed(tree, QStringLiteral("pasta")).isValid());
+
+    struct Target { QString name; QString fileName; bool emptyArea = false; bool multi = false; };
+    const QVector<Target> targets{
+        {QStringLiteral("arquivo"), QStringLiteral("alpha.txt")},
+        {QStringLiteral("pasta"), QStringLiteral("pasta")},
+        {QStringLiteral("seleção múltipla"), QString(), false, true},
+        {QStringLiteral("área vazia"), QString(), true},
+    };
+    QHash<QString, QStringList> baseline;
+
+    for (UiPreset preset : {UiPreset::Balanced, UiPreset::Compact, UiPreset::Advanced}) {
+        tab.applyUiPreferences(defaultUiPreferences(preset));
+        for (const Target &target : targets) {
+            tree->clearSelection();
+            if (target.multi) {
+                const QItemSelection multi(findRowNamed(tree, QStringLiteral("alpha.txt")),
+                                           findRowNamed(tree, QStringLiteral("pasta")));
+                tree->selectionModel()->select(multi, QItemSelectionModel::ClearAndSelect);
+            } else if (!target.emptyArea) {
+                tree->selectionModel()->select(findRowNamed(tree, target.fileName),
+                                               QItemSelectionModel::ClearAndSelect);
+            }
+            const QModelIndex row = target.emptyArea
+                                        ? QModelIndex()
+                                        : findRowNamed(tree, target.multi ? QStringLiteral("alpha.txt")
+                                                                          : target.fileName);
+            QVERIFY2(target.emptyArea || row.isValid(), qPrintable("linha ausente: " + target.name));
+            const MenuSnapshot snap = captureMenuSnapshot(tab, tree, row);
+            const QStringList labels = stripShortcuts(snap.labels);
+            const QString key = target.name;
+            if (preset == UiPreset::Balanced) {
+                baseline[key] = labels;
+                QVERIFY2(labels.contains(QStringLiteral("Colar")), "Colar ausente");
+            } else {
+                QCOMPARE(labels, baseline.value(key));
+            }
+            QCOMPARE(snap.pasteData, QDir::cleanPath(tab.currentPath()));
+        }
+    }
+}
+
+void FileTabTest::nonModalFromMenu()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString file = QDir(dir.path()).filePath(QStringLiteral("alvo.txt"));
+    QFile f(file);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.close();
+
+    FileTab tab(dir.path());
+    tab.applyUiPreferences(defaultUiPreferences(UiPreset::Compact));
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+    auto *view = tab.findChild<QTreeView *>();
+    QVERIFY(view);
+    QTRY_VERIFY_WITH_TIMEOUT(view->model()->rowCount(view->rootIndex()) >= 1, 3000);
+    const QModelIndex row = findRowNamed(view, QStringLiteral("alvo.txt"));
+    QVERIFY(row.isValid());
+    view->selectionModel()->select(row, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    view->setFocus();
+
+    QPointer<PropertiesDialog> dialog;
+    setPropertiesDialogHookForTests([&dialog](PropertiesDialog *d) { dialog = d; });
+    const auto reset = qScopeGuard([] { setPropertiesDialogHookForTests({}); });
+    QGuiApplication::clipboard()->setText(QStringLiteral("sentinela"));
+
+    runMenuAction(QStringList{QStringLiteral("Propriedades")});
+    openContextMenu(view, row);
+    QVERIFY(dialog);
+    QVERIFY(dialog->isVisible());
+    QVERIFY(!dialog->isModal());
+    QVERIFY(!QApplication::activeModalWidget());
+
+    closePopups();
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    QApplication::setActiveWindow(&tab);
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+    tab.setFocus();
+    QTest::keyClick(&tab, Qt::Key_C, Qt::ControlModifier);
+    const QMimeData *md = QGuiApplication::clipboard()->mimeData();
+    QVERIFY2(md && md->hasUrls(), "Ctrl+C deve copiar com o diálogo aberto");
+    QCOMPARE(md->urls().value(0).toLocalFile(), QDir::cleanPath(file));
+    dialog->close();
 }
 
 QTEST_MAIN(FileTabTest)

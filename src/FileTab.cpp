@@ -1,4 +1,5 @@
 #include "FileTab.h"
+#include "PropertiesDialog.h"
 #include "ThumbnailProxy.h"
 
 #include <QAction>
@@ -31,6 +32,7 @@
 #include <QShortcut>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStyledItemDelegate>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTreeView>
@@ -38,6 +40,56 @@
 #include <QVBoxLayout>
 
 #include <memory>
+
+QString FileTab::menuLabel(const QString &label, const QString &shortcut) const
+{
+    if (m_ui.preset == UiPreset::Compact || shortcut.isEmpty())
+        return label;
+    return label + QLatin1Char('\t') + shortcut;
+}
+
+void FileTab::compactMenuSeparators(QMenu *menu) const
+{
+    if (!menu)
+        return;
+    const QList<QAction *> actions = menu->actions();
+    bool previousSeparator = true;
+    for (QAction *a : actions) {
+        if (!a->isSeparator()) {
+            previousSeparator = false;
+            continue;
+        }
+        if (previousSeparator) {
+            menu->removeAction(a);
+            delete a;
+        }
+        previousSeparator = true;
+    }
+    const QList<QAction *> tail = menu->actions();
+    for (auto it = tail.crbegin(); it != tail.crend() && (*it)->isSeparator(); ++it) {
+        menu->removeAction(*it);
+        delete *it;
+    }
+}
+
+class DensityDelegate : public QStyledItemDelegate
+{
+public:
+    explicit DensityDelegate(int height, QObject *parent = nullptr)
+        : QStyledItemDelegate(parent), m_height(height) {}
+
+    void setHeight(int height) { m_height = height; }
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        QSize hint = QStyledItemDelegate::sizeHint(option, index);
+        hint.setHeight(m_height);
+        return hint;
+    }
+
+private:
+    int m_height;
+};
 
 namespace {
 
@@ -162,6 +214,7 @@ QStringList mimeIdsForTests;
 bool mimeQueryForTestsSet = false;
 ExecutableChooserHook executableChooserHook;
 LaunchHook launchHook;
+PropertiesDialogHook propertiesDialogHook;
 
 QString terminalProgram()
 {
@@ -233,6 +286,11 @@ void setExecutableChooserForTests(ExecutableChooserHook hook)
 void setLaunchHookForTests(LaunchHook hook)
 {
     launchHook = std::move(hook);
+}
+
+void setPropertiesDialogHookForTests(PropertiesDialogHook hook)
+{
+    propertiesDialogHook = std::move(hook);
 }
 
 QString FileTab::desktopFileForId(const QString &id) const
@@ -316,6 +374,8 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_tree->setEditTriggers(QAbstractItemView::EditKeyPressed);
     m_tree->setUniformRowHeights(true);
     m_tree->setAlternatingRowColors(true);
+    m_densityDelegate = new DensityDelegate(28, m_tree);
+    m_tree->setItemDelegate(m_densityDelegate);
     m_tree->setDragEnabled(true);
     m_tree->setAcceptDrops(true);
     m_tree->setDragDropMode(QAbstractItemView::DragDrop);
@@ -402,11 +462,17 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     auto *root = new QListWidgetItem(QIcon::fromTheme("drive-harddisk"), tr("Raiz (/)"), m_places);
     root->setData(Qt::UserRole, QStringLiteral("/"));
     connect(m_places, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) {
+        if (it->data(PlaceSectionRole).toString() == QStringLiteral("control")) {
+            if (it->data(PlaceGroupRole).toString() == QStringLiteral("control-customize"))
+                emit customizeRequested();
+            return;
+        }
         goTo(it->data(Qt::UserRole).toString());
     });
 
     // ----- painel de pré-visualização -----
     m_previewPanel = new QWidget;
+    m_previewPanel->setObjectName(QStringLiteral("previewPanel"));
     auto *pl = new QVBoxLayout(m_previewPanel);
     pl->setContentsMargins(10, 10, 10, 10);
     m_previewImage = new QLabel;
@@ -493,6 +559,8 @@ void FileTab::updatePlacesSelection()
     int bestLen = -1;
     for (int i = 0; i < m_places->count(); ++i) {
         QListWidgetItem *it = m_places->item(i);
+        if (it->data(PlaceSectionRole).isValid())
+            continue;
         const QString place = QDir::cleanPath(it->data(Qt::UserRole).toString());
         if (place == current) {
             m_places->setCurrentItem(it);
@@ -626,6 +694,86 @@ void FileTab::openPath(const QString &path)
         QDesktopServices::openUrl(QUrl::fromLocalFile(path));
 }
 
+void FileTab::applyUiPreferences(const UiPreferences &prefs)
+{
+    m_ui = prefs;
+
+    struct Entry { QIcon icon; QString label; QString path; };
+    QVector<Entry> entries;
+    for (int i = 0; i < m_places->count(); ++i) {
+        QListWidgetItem *it = m_places->item(i);
+        if (it->data(PlaceSectionRole).isValid())
+            continue;
+        const QString path = it->data(Qt::UserRole).toString();
+        if (!path.isEmpty())
+            entries.append({it->icon(), it->text(), path});
+    }
+
+    m_places->clear();
+    const auto addSection = [this](const QString &label, const QString &group) {
+        auto *it = new QListWidgetItem(label, m_places);
+        it->setData(PlaceSectionRole, QStringLiteral("section"));
+        it->setData(PlaceGroupRole, group);
+        it->setFlags(it->flags() & ~Qt::ItemIsSelectable);
+        return it;
+    };
+    const auto addControl = [this](const QString &label, const QString &group) {
+        auto *it = new QListWidgetItem(label, m_places);
+        it->setData(PlaceSectionRole, QStringLiteral("control"));
+        it->setData(PlaceGroupRole, group);
+        it->setFlags(it->flags() & ~Qt::ItemIsSelectable);
+        return it;
+    };
+
+    addSection(tr("Lugares"), QStringLiteral("places"));
+    for (const Entry &entry : entries) {
+        auto *it = new QListWidgetItem(entry.icon, entry.label, m_places);
+        it->setData(Qt::UserRole, entry.path);
+        it->setData(PlaceGroupRole, QStringLiteral("places"));
+    }
+    addSection(tr("Da aba"), QStringLiteral("tab"));
+    addControl(tr("Mais…"), QStringLiteral("control-more"));
+    addSection(tr("Dispositivos"), QStringLiteral("devices"));
+    addControl(tr("Personalizar…"), QStringLiteral("control-customize"));
+
+    for (int i = 0; i < m_places->count(); ++i) {
+        const QString group = m_places->item(i)->data(PlaceGroupRole).toString();
+        bool hidden = false;
+        switch (prefs.preset) {
+        case UiPreset::Compact:
+            hidden = group == QStringLiteral("tab") || group == QStringLiteral("devices")
+                  || group == QStringLiteral("control-customize");
+            break;
+        case UiPreset::Balanced:
+            hidden = group == QStringLiteral("devices")
+                  || group == QStringLiteral("control-more")
+                  || group == QStringLiteral("control-customize");
+            break;
+        case UiPreset::Advanced:
+            hidden = group == QStringLiteral("control-more");
+            break;
+        }
+        m_places->item(i)->setHidden(hidden);
+    }
+
+    const int treeSide = qMax(8, prefs.iconSize / 2);
+    const int gridCell = qMax(96, prefs.iconSize * 2 + 48);
+    m_treeIconBase = QSize(treeSide, treeSide);
+    m_gridIconBase = QSize(prefs.iconSize, prefs.iconSize);
+    m_gridBase = QSize(gridCell, gridCell);
+    setZoom(m_zoom);
+
+    for (int col = 0; col <= 3; ++col)
+        m_tree->header()->setSectionHidden(col,
+            !prefs.columns.contains(QString::number(col)));
+
+    const int rowHeight = prefs.density == 0 ? 22 : (prefs.density == 2 ? 34 : 28);
+    m_densityDelegate->setHeight(rowHeight);
+    m_places->setSpacing(prefs.density == 0 ? 0 : (prefs.density == 2 ? 4 : 2));
+    setPreviewVisible(prefs.preview);
+    updatePlacesSelection();
+}
+
 void FileTab::setIconMode(bool icons)
 {
     m_iconMode = icons;
@@ -754,78 +902,88 @@ void FileTab::showContextMenu(const QPoint &pos)
     const QString first = sel.value(0);
 
     QMenu menu(this);
-    const auto addPaste = [this, &menu] {
-        QAction *act = menu.addAction(QIcon::fromTheme("edit-paste"), tr("Colar"), this, [this] { paste(); });
+    const auto label = [this](const QString &text, const QString &shortcut = QString()) {
+        return menuLabel(text, shortcut);
+    };
+    const auto addPaste = [this, &menu, &label] {
+        QAction *act = menu.addAction(QIcon::fromTheme("edit-paste"), label(tr("Colar")), this,
+                                      [this] { paste(); });
+        act->setObjectName(QStringLiteral("pasteAction"));
+        act->setData(m_path);
         const QMimeData *md = QGuiApplication::clipboard()->mimeData();
         act->setEnabled(md && md->hasUrls());
     };
 
     if (sel.isEmpty()) {
-        menu.addAction(QIcon::fromTheme("folder-new"), tr("Nova pasta…"), this, [this] { newFolder(); });
+        menu.addAction(QIcon::fromTheme("folder-new"), label(tr("Nova pasta…")), this, [this] { newFolder(); });
         addNewMenu(&menu);
         menu.addSeparator();
         addPaste();
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("view-refresh"), tr("Atualizar"), this, [this] { refreshModel(); });
-        QMenu *view = menu.addMenu(tr("Exibir"));
+        menu.addAction(QIcon::fromTheme("view-refresh"), label(tr("Atualizar")), this, [this] { refreshModel(); });
+        QMenu *view = menu.addMenu(label(tr("Exibir")));
         addViewMenu(view);
-        menu.addAction(tr("Abrir terminal aqui"), this, [this] { openTerminal(m_path); });
-        menu.addAction(tr("Propriedades da pasta"), this, [this] { showProperties(m_path); });
+        menu.addAction(label(tr("Abrir terminal aqui")), this, [this] { openTerminal(m_path); });
+        menu.addAction(label(tr("Propriedades da pasta")), this, [this] { showProperties(m_path); });
     } else if (one && oneDir) {
-        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
-        menu.addAction(tr("Abrir em nova aba"), this, [this, first] { emit openInNewTab(first); });
-        menu.addAction(tr("Abrir terminal nesta pasta"), this, [this, first] { openTerminal(first); });
-        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
+        menu.addAction(label(tr("Abrir"), QStringLiteral("Enter")), this, [this, first] { openPath(first); });
+        menu.addAction(label(tr("Abrir em nova aba")), this, [this, first] { emit openInNewTab(first); });
+        menu.addAction(label(tr("Abrir terminal nesta pasta")), this, [this, first] { openTerminal(first); });
+        menu.addAction(label(tr("Copiar caminho")), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
         menu.addSeparator();
         addNewMenu(&menu);
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        menu.addAction(QIcon::fromTheme("edit-copy"), label(tr("Copiar")), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), label(tr("Recortar")), this, [this, sel] { copyToClipboard(true, sel); });
         addPaste();
         menu.addSeparator();
-        menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
-        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
-        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addAction(label(tr("Renomear")), this, [this, first] { renameCurrent(first); });
+        menu.addAction(QIcon::fromTheme("user-trash"), label(tr("Mover para a lixeira")), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), label(tr("Excluir permanentemente")), this, [this, sel] { deleteSelected(sel); });
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        menu.addAction(QIcon::fromTheme("archive-insert"), label(tr("Compactar…")), this, [this, sel] { compress(sel); });
         menu.addSeparator();
-        menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
+        menu.addAction(label(tr("Propriedades"), QStringLiteral("Alt+Enter")), this,
+                      [this, first] { showProperties(first); });
     } else if (one) {
-        menu.addAction(tr("Abrir"), this, [this, first] { openPath(first); });
-        QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), tr("Abrir com…"));
+        menu.addAction(label(tr("Abrir"), QStringLiteral("Enter")), this, [this, first] { openPath(first); });
+        QMenu *openWith = menu.addMenu(QIcon::fromTheme("applications-accessories"), label(tr("Abrir com…")));
         addOpenWithMenu(openWith, first);
-        menu.addAction(tr("Copiar caminho"), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
+        menu.addAction(label(tr("Copiar caminho")), this, [this, first] { copyPathsToClipboard(QStringList{ first }); });
         menu.addSeparator();
         addNewMenu(&menu);
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
+        menu.addAction(QIcon::fromTheme("edit-copy"), label(tr("Copiar")), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), label(tr("Recortar")), this, [this, sel] { copyToClipboard(true, sel); });
         addPaste();
         menu.addSeparator();
-        menu.addAction(tr("Renomear"), this, [this, first] { renameCurrent(first); });
-        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
-        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addAction(label(tr("Renomear")), this, [this, first] { renameCurrent(first); });
+        menu.addAction(QIcon::fromTheme("user-trash"), label(tr("Mover para a lixeira")), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), label(tr("Excluir permanentemente")), this, [this, sel] { deleteSelected(sel); });
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
+        menu.addAction(QIcon::fromTheme("archive-insert"), label(tr("Compactar…")), this, [this, sel] { compress(sel); });
         if (!archiveSuffix(first).isEmpty()) {
-            menu.addAction(QIcon::fromTheme("archive-extract"), tr("Extrair aqui"), this, [this, first] { extract(first, false); });
-            menu.addAction(tr("Extrair em pasta própria"), this, [this, first] { extract(first, true); });
+            menu.addAction(QIcon::fromTheme("archive-extract"), label(tr("Extrair aqui")), this, [this, first] { extract(first, false); });
+            menu.addAction(label(tr("Extrair em pasta própria")), this, [this, first] { extract(first, true); });
         }
         menu.addSeparator();
-        menu.addAction(tr("Propriedades"), this, [this, first] { showProperties(first); });
+        menu.addAction(label(tr("Propriedades"), QStringLiteral("Alt+Enter")), this,
+                      [this, first] { showProperties(first); });
     } else {
-        menu.addAction(QIcon::fromTheme("edit-copy"), tr("Copiar"), this, [this, sel] { copyToClipboard(false, sel); });
-        menu.addAction(QIcon::fromTheme("edit-cut"), tr("Recortar"), this, [this, sel] { copyToClipboard(true, sel); });
-        menu.addAction(tr("Copiar caminhos"), this, [this, sel] { copyPathsToClipboard(sel); });
+        menu.addAction(QIcon::fromTheme("edit-copy"), label(tr("Copiar")), this, [this, sel] { copyToClipboard(false, sel); });
+        menu.addAction(QIcon::fromTheme("edit-cut"), label(tr("Recortar")), this, [this, sel] { copyToClipboard(true, sel); });
+        menu.addAction(label(tr("Copiar caminhos")), this, [this, sel] { copyPathsToClipboard(sel); });
         addPaste();
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("archive-insert"), tr("Compactar…"), this, [this, sel] { compress(sel); });
-        menu.addAction(QIcon::fromTheme("user-trash"), tr("Mover para a lixeira"), this, [this, sel] { trashSelected(sel); });
-        menu.addAction(QIcon::fromTheme("edit-delete"), tr("Excluir permanentemente"), this, [this, sel] { deleteSelected(sel); });
+        menu.addAction(QIcon::fromTheme("archive-insert"), label(tr("Compactar…")), this, [this, sel] { compress(sel); });
+        menu.addAction(QIcon::fromTheme("user-trash"), label(tr("Mover para a lixeira")), this, [this, sel] { trashSelected(sel); });
+        menu.addAction(QIcon::fromTheme("edit-delete"), label(tr("Excluir permanentemente")), this, [this, sel] { deleteSelected(sel); });
         menu.addSeparator();
         addNewMenu(&menu);
     }
 
+    if (m_ui.preset == UiPreset::Compact)
+        compactMenuSeparators(&menu);
     if (contextMenuHook)
         contextMenuHook(&menu, sel);
     menu.exec(v->viewport()->mapToGlobal(pos));
@@ -1192,20 +1350,10 @@ void FileTab::renameCurrent(const QString &path)
 
 void FileTab::showProperties(const QString &path)
 {
-    const QFileInfo fi(path);
-    const QMimeType mt = QMimeDatabase().mimeTypeForFile(fi);
-    QString t;
-    t += tr("Nome: %1\n").arg(fi.fileName());
-    t += tr("Local: %1\n").arg(fi.absolutePath());
-    t += tr("Tipo: %1 (%2)\n").arg(mt.comment(), mt.name());
-    if (fi.isFile())
-        t += tr("Tamanho: %1\n").arg(QLocale().formattedDataSize(fi.size()));
-    if (fi.isSymLink())
-        t += tr("Aponta para: %1\n").arg(fi.symLinkTarget());
-    t += tr("Modificado: %1\n").arg(QLocale().toString(fi.lastModified(), QLocale::LongFormat));
-    t += tr("Dono: %1  Grupo: %2\n").arg(fi.owner(), fi.group());
-    t += tr("Permissões: %1").arg(QString::number(static_cast<uint>(fi.permissions()) & 0xFFF, 16));
-    QMessageBox::information(this, tr("Propriedades"), t);
+    auto *dialog = new PropertiesDialog(path, m_ui, this);
+    dialog->show();
+    if (propertiesDialogHook)
+        propertiesDialogHook(dialog);
 }
 
 void FileTab::openTerminal(const QString &dir)

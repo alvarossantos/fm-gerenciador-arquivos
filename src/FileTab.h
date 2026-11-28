@@ -7,6 +7,8 @@
 #include <functional>
 #include <memory>
 
+#include "UiPreferences.h"
+
 class QAbstractItemView;
 class QAction;
 class QFileSystemModel;
@@ -18,6 +20,8 @@ class QProcess;
 class QProgressDialog;
 class QStackedWidget;
 class QTreeView;
+class DensityDelegate;
+class PropertiesDialog;
 class ThumbnailProxy;
 
 using RestoreBackupHook = std::function<bool(const QString &, const QString &)>;
@@ -34,11 +38,20 @@ using ExecutableChooserHook = std::function<QString()>;
 void setExecutableChooserForTests(ExecutableChooserHook hook);
 using LaunchHook = std::function<bool(const QString &, const QStringList &, const QString &)>;
 void setLaunchHookForTests(LaunchHook hook);
+using PropertiesDialogHook = std::function<void(PropertiesDialog *)>;
+void setPropertiesDialogHookForTests(PropertiesDialogHook hook);
 
 class FileTab : public QWidget {
     Q_OBJECT
 public:
     explicit FileTab(const QString &startPath, QWidget *parent = nullptr);
+
+    static constexpr int PlaceSectionRole = Qt::UserRole + 1;
+    static constexpr int PlaceGroupRole = Qt::UserRole + 2;
+
+    void applyUiPreferences(const UiPreferences &prefs);
+    QString menuLabel(const QString &label, const QString &shortcut = QString()) const;
+    void compactMenuSeparators(QMenu *menu) const;
 
     QString desktopFileForId(const QString &id) const;
     QString currentPath() const { return m_path; }
@@ -64,6 +77,7 @@ signals:
     void titleChanged(const QString &title);
     void statusMessage(const QString &text);
     void openInNewTab(const QString &path);
+    void customizeRequested();
 
 private:
     QAbstractItemView *currentView() const;
@@ -126,4 +140,6 @@ private:
     QAction *m_zoomInAct = nullptr;
     QAction *m_zoomOutAct = nullptr;
     QAction *m_zoomResetAct = nullptr;
+    DensityDelegate *m_densityDelegate = nullptr;
+    UiPreferences m_ui;
 };
