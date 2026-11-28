@@ -66,7 +66,7 @@ Comparação histórica (documento `2026-11-27-identidade-visual-presets.md`, PR
 
 ## Capturas dos menus (três presets e 320 px)
 
-Geradas offscreen com o mesmo estilo Fusion e a paleta da shell: um utilitário temporário fora do repositório (`/tmp/opencode/fm20-capturas`) instanciou `MainWindow`, aplicou `defaultUiPreferences(preset)` e compôs `QWidget::render()` da janela com o popup. Os rótulos abaixo foram conferidos por OCR (`tesseract -l spa+eng --psm 11`); este modelo não inspecionou as imagens visualmente.
+Regeradas em `5179316` (já sem o terceiro botão) com o mesmo estilo Fusion e a paleta da shell: um utilitário temporário fora do repositório (`/tmp/opencode/fm20-capturas`) instanciou `MainWindow`, aplicou `defaultUiPreferences(preset)` e compôs `QWidget::render()` da janela com o popup. Os rótulos abaixo foram conferidos por OCR (`tesseract -l spa+eng --psm 11`); este modelo não inspecionou as imagens visualmente. OCR das oito imagens: nenhuma contém "Mais opções"; `Interface` aparece em `Arquivos`; o popup de `Visualização` a 320 px contém as 17 ações (lista, grade, oito ordenações, ocultos, pré-visualização, três zoom, duas legendas).
 
 | Preset / largura | `Arquivos` | `Visualização` |
 |---|---|---|
@@ -75,7 +75,7 @@ Geradas offscreen com o mesmo estilo Fusion e a paleta da shell: um utilitário 
 | Avançada (900 px) | [menu-arquivos-avancada.png](capturas/menu-arquivos-avancada.png) — mesmos itens com colunas completas e pré-visualização | [menu-visualizacao-avancada.png](capturas/menu-visualizacao-avancada.png) — mesmos itens com legenda de atalhos na toolbar |
 | 320 px (Equilibrada) | [menu-arquivos-estreita-320.png](capturas/menu-arquivos-estreita-320.png) — botões Arquivos e Visualização continuam visíveis; popup mantém os sete itens legíveis | [menu-visualizacao-estreita-320.png](capturas/menu-visualizacao-estreita-320.png) — popup reposicionado dentro da janela estreita; OCR confirma as oito ordenações e ações de exibição |
 
-Limitação das capturas: o platform offscreen não aplica geometria de tela real, então o popup da janela de 320 px foi reposicionado para caber no quadro; a cadeia de foco e a abertura por teclado nessa largura são verificadas por `keyboardOpensMenusAt320InEveryPreset` e pelos dois testes novos. Nenhuma captura de sessão Wayland foi feita nesta task.
+Limitação destas imagens: o platform offscreen não aplica geometria de tela real, então o popup da janela de 320 px foi reposicionado para caber no quadro. A interação em sessão Wayland real foi validada separadamente (seção abaixo), com o mesmo `MainWindow` do commit final.
 
 ## Resultado
 
@@ -95,4 +95,24 @@ RED → GREEN: `onlyTwoMenusKeepEveryCommand` falhou em runtime enquanto `moreMe
 | Ajustes pós-revisão | Debug | **6/6, 100%** | 6,39 s | 0 |
 | Ajustes pós-revisão | Release | **6/6, 100%** | 6,51 s | 0 |
 
-`mainwindow_test` passou de 37 para 39 casos; contagem total agora 128 casos QTest + 1 smoke. O benchmark de 140,5 ms **não foi repetido** nesta rodada (mudança é de montagem de menus e argumentos, não de hot path de pintura); o número do corpo do PR continua como medição da rodada anterior, com as mesmas ressalvas de não pareamento. Capturas existentes mostram o terceiro botão na Equilibrada a 900 px e precisam ser refeitas após esta mudança antes de sair do rascunho.
+`mainwindow_test` passou de 37 para 39 casos; contagem total agora 128 casos QTest + 1 smoke. O benchmark de 140,5 ms **não foi repetido** nesta rodada (mudança é de montagem de menus e argumentos, não de hot path de pintura); o número do corpo do PR continua como medição da rodada anterior, com as mesmas ressalvas de não pareamento. As oito capturas foram regeradas em `5179316`, já sem o terceiro botão, e conferidas por OCR.
+
+## Validação em sessão Wayland real (320 px)
+
+Sessão `XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-0`, compositor `umbriel`, saída HDMI-A-1 com área útil `1912x1038-1916+38`. Um probe temporário fora do repositório (`/tmp/opencode/fm20-wayland`) instanciou o `MainWindow` do commit final com `setFixedSize(320, 600)`, preset `Equilibrada`, tema da shell, e registrou eventos de foco/show/hide em `stderr`. As teclas foram enviadas por `wtype` (protocolo virtual-keyboard do Wayland), não por eventos sintéticos do Qt; a janela foi posta em modo floating com `umbriel msg window-toggle-floating`.
+
+Sequência observada no log (cada passo com pausa entre teclas):
+
+| Ação real | Evidência |
+|---|---|
+| Âncora em `Arquivos` | `[probe] anchor: filesMenuButton focused` |
+| `Tab` ×6 | `filesMenuButton → QToolButton → breadcrumbOverflow → viewMenuButton → places → QTreeView → breadcrumbButton` — ambos os botões alcançados |
+| `Shift+Tab` ×3 até `viewMenuButton`; `Espaço` | `[event] SHOW viewMenu`, `focus=viewMenuButton`, `viewVis=1` |
+| `Esc` | `[event] HIDE viewMenu`, `focus=viewMenuButton` — foco devolvido ao botão |
+| `Enter` | `viewVis=1` — reabertura por Enter confirmada |
+| `Shift+Tab` ×3 até `filesMenuButton`; `Espaço` | `filesVis=1`, OCR da captura: Nova janela, Nova aba, Preferências…, `Interface`, Atalhos, Ajuda, Sobre |
+| `Esc`; `Enter`; `Esc` | `filesVis` 1 → 0; `focus=filesMenuButton` ao final |
+
+Popup de `Visualização` na janela de 320 px: `viewMenu=361x545+-1639,39`, última ação em `-1284,578`. Ambos os cantos ficam dentro da área útil de `HDMI-A-1` (`x` de −1916 a −4, `y` de 38 a 1076); o menu é mais largo que a janela, mas não é cortado pela tela. `grim` + OCR da região do popup confirmam as 17 ações renderizadas, de `Lista detalhada` a `Mostrar data na grade`.
+
+O probe foi encerrado ao final e o foco voltou à janela do OpenCode. Capturas de evidência brutas em `/tmp/opencode/fm-wayland-view-320.png` e `/tmp/opencode/fm-wayland-files-320.png` (fora do repositório). As oito imagens versionadas continuam sendo as composições offscreen; a validação de interação aqui registrada complementa — não substitui — o aceite visual em Wayland.
