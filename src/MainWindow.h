@@ -64,6 +64,8 @@ private:
     QAction *m_sortActions[SortActionCount] = {};
     QActionGroup *m_sortGroup = nullptr;
     QAction *m_zoomInAct, *m_zoomOutAct, *m_zoomResetAct;
+    QAction *m_gridSizeAct = nullptr;
+    QAction *m_gridDateAct = nullptr;
     QAction *m_newTabAct = nullptr;
     QAction *m_moreAct = nullptr;
     QAction *m_presetCompactAct = nullptr;

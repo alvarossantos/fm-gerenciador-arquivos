@@ -42,6 +42,8 @@ UiPreferences defaultUiPreferences(UiPreset preset)
 {
     UiPreferences prefs;
     prefs.preset = preset;
+    prefs.gridSize = false;
+    prefs.gridDate = false;
     switch (preset) {
     case UiPreset::Compact:
         prefs.density = 0;
@@ -112,6 +114,11 @@ UiPreferences loadUiPreferences(QSettings &settings)
     if (settings.contains(QLatin1String("ui/preview")))
         prefs.preview = settings.value(QLatin1String("ui/preview")).toBool();
 
+    if (settings.contains(QLatin1String("ui/gridSize")))
+        prefs.gridSize = settings.value(QLatin1String("ui/gridSize")).toBool();
+    if (settings.contains(QLatin1String("ui/gridDate")))
+        prefs.gridDate = settings.value(QLatin1String("ui/gridDate")).toBool();
+
     return prefs;
 }
 
@@ -122,4 +129,6 @@ void saveUiPreferences(QSettings &settings, const UiPreferences &prefs)
     settings.setValue(QLatin1String("ui/iconSize"), prefs.iconSize);
     settings.setValue(QLatin1String("ui/columns"), prefs.columns);
     settings.setValue(QLatin1String("ui/preview"), prefs.preview);
+    settings.setValue(QLatin1String("ui/gridSize"), prefs.gridSize);
+    settings.setValue(QLatin1String("ui/gridDate"), prefs.gridDate);
 }

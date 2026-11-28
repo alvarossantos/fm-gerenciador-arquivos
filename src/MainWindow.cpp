@@ -178,6 +178,12 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_zoomOutAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus));
     m_zoomResetAct = tb->addAction(QIcon::fromTheme("zoom-original"), tr("Zoom original"));
     m_zoomResetAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_0));
+    m_gridSizeAct = new QAction(tr("Mostrar tamanho na grade"), this);
+    m_gridSizeAct->setObjectName(QStringLiteral("gridSizeAction"));
+    m_gridSizeAct->setCheckable(true);
+    m_gridDateAct = new QAction(tr("Mostrar data na grade"), this);
+    m_gridDateAct->setObjectName(QStringLiteral("gridDateAction"));
+    m_gridDateAct->setCheckable(true);
     m_newTabAct = tb->addAction(QIcon::fromTheme("tab-new"), tr("Nova aba (Ctrl+T)"));
     m_newTabAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
 
@@ -248,6 +254,8 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_viewMenu->addAction(m_zoomOutAct);
     m_viewMenu->addAction(m_zoomInAct);
     m_viewMenu->addAction(m_zoomResetAct);
+    m_viewMenu->addAction(m_gridSizeAct);
+    m_viewMenu->addAction(m_gridDateAct);
 
     m_moreAct = new QAction(style()->standardIcon(QStyle::SP_ToolBarHorizontalExtensionButton),
                             QString(), this);
@@ -301,6 +309,17 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
         QSettings s(QStringLiteral("fm"), QStringLiteral("fm"));
         s.setValue(QStringLiteral("ui/preview"), on);
     });
+    auto applyGridLegends = [this] {
+        m_ui.gridSize = m_gridSizeAct->isChecked();
+        m_ui.gridDate = m_gridDateAct->isChecked();
+        for (int i = 0; i < m_tabs->count(); ++i)
+            static_cast<FileTab *>(m_tabs->widget(i))->setGridLegends(m_ui.gridSize, m_ui.gridDate);
+        QSettings s(QStringLiteral("fm"), QStringLiteral("fm"));
+        s.setValue(QStringLiteral("ui/gridSize"), m_ui.gridSize);
+        s.setValue(QStringLiteral("ui/gridDate"), m_ui.gridDate);
+    };
+    connect(m_gridSizeAct, &QAction::toggled, this, applyGridLegends);
+    connect(m_gridDateAct, &QAction::toggled, this, applyGridLegends);
     connect(m_hiddenAct, &QAction::toggled, this, [this](bool on) {
         for (int i = 0; i < m_tabs->count(); ++i)
             static_cast<FileTab *>(m_tabs->widget(i))->setShowHidden(on);
@@ -511,6 +530,10 @@ void MainWindow::applyUiPreferences(const UiPreferences &prefs)
     m_presetBalancedAct->setChecked(prefs.preset == UiPreset::Balanced);
     m_presetAdvancedAct->setChecked(prefs.preset == UiPreset::Advanced);
     m_previewAct->setChecked(prefs.preview);
+    const QSignalBlocker blockSize(m_gridSizeAct);
+    const QSignalBlocker blockDate(m_gridDateAct);
+    m_gridSizeAct->setChecked(prefs.gridSize);
+    m_gridDateAct->setChecked(prefs.gridDate);
 
     for (int i = 0; i < m_tabs->count(); ++i)
         static_cast<FileTab *>(m_tabs->widget(i))->applyUiPreferences(prefs);

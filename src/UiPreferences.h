@@ -11,6 +11,8 @@ struct UiPreferences {
     int iconSize = 48;
     QStringList columns;
     bool preview = false;
+    bool gridSize = false;
+    bool gridDate = false;
 };
 
 UiPreferences defaultUiPreferences(UiPreset preset);

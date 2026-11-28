@@ -13,6 +13,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QImageReader>
@@ -25,6 +26,8 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMimeDatabase>
+#include <QPainter>
+#include <QPalette>
 #include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -35,6 +38,7 @@
 #include <QStackedWidget>
 #include <QStyledItemDelegate>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QTemporaryDir>
 #include <QTreeView>
 #include <QUrl>
@@ -90,6 +94,70 @@ public:
 
 private:
     int m_height;
+};
+
+// Delegate da grade: desenha o nome e acrescenta uma linha por
+// legenda ativa (tamanho e/ou data de modificação). A célula reserva a mesma
+// altura extra no sizeHint, para que as linhas nunca fiquem cortadas.
+class GridLegendDelegate : public QStyledItemDelegate
+{
+public:
+    explicit GridLegendDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent) {}
+
+    void setLegends(bool size, bool date)
+    {
+        m_size = size;
+        m_date = date;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        const int lines = legendLines();
+        QStyleOptionViewItem opt = option;
+        if (lines > 0)
+            opt.rect.adjust(0, 0, 0, -lines * QFontMetrics(opt.font).height());
+        QStyledItemDelegate::paint(painter, opt, index);
+        if (lines == 0)
+            return;
+
+        painter->save();
+        QRect legendRect = option.rect;
+        legendRect.setTop(legendRect.bottom() + 1 - lines * QFontMetrics(option.font).height());
+        painter->setFont(option.font);
+        painter->setPen(option.palette.color(option.state & QStyle::State_Selected
+                                                 ? QPalette::HighlightedText : QPalette::Text));
+        if (m_size) {
+            drawLine(painter, legendRect, index.siblingAtColumn(1).data(Qt::DisplayRole).toString());
+            legendRect.translate(0, QFontMetrics(option.font).height());
+        }
+        if (m_date)
+            drawLine(painter, legendRect, index.siblingAtColumn(3).data(Qt::DisplayRole).toString());
+        painter->restore();
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        QSize hint = QStyledItemDelegate::sizeHint(option, index);
+        if (const int lines = legendLines())
+            hint.setHeight(hint.height() + lines * QFontMetrics(option.font).height());
+        return hint;
+    }
+
+private:
+    int legendLines() const { return (m_size ? 1 : 0) + (m_date ? 1 : 0); }
+
+    static void drawLine(QPainter *painter, const QRect &rect, const QString &text)
+    {
+        if (text.isEmpty() || rect.isEmpty())
+            return;
+        const QString elided = painter->fontMetrics().elidedText(text, Qt::ElideRight, rect.width());
+        painter->drawText(rect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextSingleLine, elided);
+    }
+
+    bool m_size = false;
+    bool m_date = false;
 };
 
 namespace {
@@ -409,6 +477,8 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_icons->setSpacing(8);
     m_icons->setWordWrap(true);
     m_icons->setUniformItemSizes(false);
+    m_gridLegendDelegate = new GridLegendDelegate(this);
+    m_icons->setItemDelegate(m_gridLegendDelegate);
     m_icons->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_icons->setEditTriggers(QAbstractItemView::EditKeyPressed);
     m_icons->setDragEnabled(true);
@@ -784,7 +854,7 @@ void FileTab::applyUiPreferences(const UiPreferences &prefs)
     m_treeIconBase = QSize(treeSide, treeSide);
     m_gridIconBase = QSize(prefs.iconSize, prefs.iconSize);
     m_gridBase = QSize(gridCell, gridCell);
-    setZoom(m_zoom);
+    setGridLegends(prefs.gridSize, prefs.gridDate);
 
     for (int col = 0; col <= 3; ++col)
         m_tree->header()->setSectionHidden(col,
@@ -809,10 +879,20 @@ void FileTab::setZoom(int percent)
     const int treeSide = qMax(8, m_treeIconBase.width() * m_zoom / 100);
     const int gridSide = qMax(16, m_gridIconBase.width() * m_zoom / 100);
     const int cell = qMax(96, m_gridBase.width() * m_zoom / 100);
+    const int legendLines = (m_gridSizeLegend ? 1 : 0) + (m_gridDateLegend ? 1 : 0);
+    const int legendHeight = legendLines * QFontMetrics(m_icons->font()).height();
     m_icons->setIconSize(QSize(gridSide, gridSide));
-    m_icons->setGridSize(QSize(cell, cell));
+    m_icons->setGridSize(QSize(cell, cell + legendHeight));
     m_tree->setIconSize(QSize(treeSide, treeSide));
     emit zoomChanged(m_zoom);
+}
+
+void FileTab::setGridLegends(bool size, bool date)
+{
+    m_gridSizeLegend = size;
+    m_gridDateLegend = date;
+    m_gridLegendDelegate->setLegends(size, date);
+    setZoom(m_zoom);
 }
 
 void FileTab::setPreviewVisible(bool visible)

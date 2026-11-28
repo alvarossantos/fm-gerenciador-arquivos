@@ -42,6 +42,8 @@ void UiPreferencesTest::defaultsMatchMockups()
     QCOMPARE(compact.iconSize, 32);
     QCOMPARE(compact.columns, QStringList{QStringLiteral("0")});
     QCOMPARE(compact.preview, false);
+    QCOMPARE(compact.gridSize, false);
+    QCOMPARE(compact.gridDate, false);
 
     const QStringList allColumns{QStringLiteral("0"), QStringLiteral("1"),
                                  QStringLiteral("2"), QStringLiteral("3")};
@@ -50,12 +52,16 @@ void UiPreferencesTest::defaultsMatchMockups()
     QCOMPARE(balanced.iconSize, 48);
     QCOMPARE(balanced.columns, allColumns);
     QCOMPARE(balanced.preview, false);
+    QCOMPARE(balanced.gridSize, false);
+    QCOMPARE(balanced.gridDate, false);
 
     const UiPreferences advanced = defaultUiPreferences(UiPreset::Advanced);
     QCOMPARE(advanced.density, 2);
     QCOMPARE(advanced.iconSize, 64);
     QCOMPARE(advanced.columns, allColumns);
     QCOMPARE(advanced.preview, true);
+    QCOMPARE(advanced.gridSize, false);
+    QCOMPARE(advanced.gridDate, false);
 }
 
 void UiPreferencesTest::missingKeyUsesSelectedPreset()
@@ -70,6 +76,12 @@ void UiPreferencesTest::missingKeyUsesSelectedPreset()
     settings.setValue(QStringLiteral("ui/preset"), QStringLiteral("advanced"));
     QVERIFY(!settings.contains(QStringLiteral("ui/preview")));
     QVERIFY(loadUiPreferences(settings).preview);
+
+    QVERIFY(!settings.contains(QStringLiteral("ui/gridSize")));
+    QVERIFY(!settings.contains(QStringLiteral("ui/gridDate")));
+    const UiPreferences withoutLegends = loadUiPreferences(settings);
+    QCOMPARE(withoutLegends.gridSize, false);
+    QCOMPARE(withoutLegends.gridDate, false);
 }
 
 void UiPreferencesTest::invalidValuesFallBackToPreset()
@@ -109,6 +121,8 @@ void UiPreferencesTest::roundTrip()
     prefs.iconSize = 32;
     prefs.columns = QStringList{QStringLiteral("0"), QStringLiteral("2")};
     prefs.preview = false;
+    prefs.gridSize = true;
+    prefs.gridDate = true;
 
     QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
     saveUiPreferences(settings, prefs);
@@ -119,6 +133,8 @@ void UiPreferencesTest::roundTrip()
     QCOMPARE(loaded.iconSize, 32);
     QCOMPARE(loaded.columns, prefs.columns);
     QCOMPARE(loaded.preview, false);
+    QCOMPARE(loaded.gridSize, true);
+    QCOMPARE(loaded.gridDate, true);
 }
 
 QTEST_MAIN(UiPreferencesTest)

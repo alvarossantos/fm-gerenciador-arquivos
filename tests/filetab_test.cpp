@@ -12,6 +12,7 @@
 #include <QImage>
 #include <QItemSelectionModel>
 #include <QElapsedTimer>
+#include <QFontMetrics>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QListView>
@@ -25,6 +26,7 @@
 #include <QPointer>
 #include <QSignalSpy>
 #include <QStyleOptionViewItem>
+#include <QStyledItemDelegate>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeView>
@@ -397,6 +399,7 @@ private slots:
     void closingTabKeepsScratchWhenProcessDoesNotStop();
     void zoomChangesIconAndGridSize();
     void zoomClampsAndSurvivesModeSwitch();
+    void gridLegendsReserveCellHeightAtBothZooms();
     void viewRefinementsAreApplied();
     void zoomResetRestoresInitialSizes();
     void sizeColumnCellsAreRightAligned();
@@ -2485,6 +2488,60 @@ void FileTabTest::zoomClampsAndSurvivesModeSwitch()
     tab.setIconMode(false);
     tab.setIconMode(true);
     QCOMPARE(tab.zoom(), 150);
+}
+
+void FileTabTest::gridLegendsReserveCellHeightAtBothZooms()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString name = QStringLiteral(
+        "nome-muito-longo-para-testar-legendas-de-tamanho-e-data.txt");
+    {
+        QFile f(QDir(dir.path()).filePath(name));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+    }
+
+    FileTab tab(dir.path());
+    QVERIFY(!tab.gridSize());
+    QVERIFY(!tab.gridDate());
+
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+    QTRY_VERIFY_WITH_TIMEOUT(icons->model()->rowCount(icons->rootIndex()) > 0, 3000);
+    const QModelIndex index = icons->model()->index(0, 0, icons->rootIndex());
+    QVERIFY(index.isValid());
+    QCOMPARE(index.data(Qt::DisplayRole).toString(), name);
+
+    QStyleOptionViewItem option;
+    option.initFrom(icons);
+    QStyledItemDelegate baseDelegate;
+    const int baseHeight = baseDelegate.sizeHint(option, index).height();
+    const int lineHeight = QFontMetrics(option.font).height();
+    QVERIFY2(lineHeight > 0, "altura de linha inválida");
+
+    tab.setGridLegends(true, true);
+    QVERIFY(tab.gridSize());
+    QVERIFY(tab.gridDate());
+    QAbstractItemDelegate *delegate = icons->itemDelegate();
+    QVERIFY(delegate);
+
+    for (int zoom : {50, 200}) {
+        tab.setZoom(zoom);
+        QCOMPARE(tab.zoom(), zoom);
+        const int hint = delegate->sizeHint(option, index).height();
+        QVERIFY2(hint >= baseHeight + 2 * lineHeight,
+                 qPrintable(QStringLiteral("zoom %1: sizeHint %2, base %3, linha %4")
+                                .arg(zoom).arg(hint).arg(baseHeight).arg(lineHeight)));
+        QVERIFY2(icons->gridSize().height() >= hint,
+                 qPrintable(QStringLiteral("zoom %1: célula %2 < delegate %3")
+                                .arg(zoom).arg(icons->gridSize().height()).arg(hint)));
+        const int iconSide = 72 * zoom / 100;
+        QCOMPARE(icons->iconSize(), QSize(iconSide, iconSide));
+    }
 }
 
 void FileTabTest::viewRefinementsAreApplied()

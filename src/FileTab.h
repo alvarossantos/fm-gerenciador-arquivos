@@ -21,6 +21,7 @@ class QProgressDialog;
 class QStackedWidget;
 class QTreeView;
 class DensityDelegate;
+class GridLegendDelegate;
 class PropertiesDialog;
 class ThumbnailProxy;
 
@@ -66,6 +67,9 @@ public:
     void setIconMode(bool icons);
     void setZoom(int percent);
     int zoom() const { return m_zoom; }
+    void setGridLegends(bool size, bool date);
+    bool gridSize() const { return m_gridSizeLegend; }
+    bool gridDate() const { return m_gridDateLegend; }
     int sortColumn() const { return m_sortColumn; }
     Qt::SortOrder sortOrder() const { return m_sortOrder; }
     void setSort(int column, Qt::SortOrder order);
@@ -140,6 +144,8 @@ private:
     QSize m_treeIconBase;
     QSize m_gridIconBase;
     QSize m_gridBase;
+    bool m_gridSizeLegend = false;
+    bool m_gridDateLegend = false;
 
     QAction *m_listAct = nullptr;
     QAction *m_iconsAct = nullptr;
@@ -149,5 +155,6 @@ private:
     QAction *m_zoomOutAct = nullptr;
     QAction *m_zoomResetAct = nullptr;
     DensityDelegate *m_densityDelegate = nullptr;
+    GridLegendDelegate *m_gridLegendDelegate = nullptr;
     UiPreferences m_ui;
 };
