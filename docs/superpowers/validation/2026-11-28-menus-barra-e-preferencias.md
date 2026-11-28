@@ -7,7 +7,7 @@ Branch `enhancement/20-menus-barra` · BASE `d204050` · plano `.superpowers/sdd
 - CachyOS, Qt `6.12.1`, GCC `16.2.1`, CMake/CTest; execução headless com `QT_QPA_PLATFORM=offscreen` e `timeout` externo.
 - Paleta aplicada nas capturas: `~/.local/state/quickshell/user/generated/app-palette.json`; estilo Fusion, o mesmo do binário `fm`.
 - Nenhuma dependência nova. `QSettings("fm","fm")` continua isolado nos testes por `XDG_CONFIG_HOME` temporário.
-- Não houve alteração de código de produção nesta task: as Tasks 1–6 já entregam menus, ações, ordenação, colunas e legendas; o `ThemeManager` existente já tem `QFileSystemWatcher` com debounce de 150 ms.
+- Nas Tasks 1–7 não houve alteração de produção: as Tasks 1–6 já entregam menus, ações, ordenação, colunas e legendas; o `ThemeManager` existente já tem `QFileSystemWatcher` com debounce de 150 ms. Os ajustes pós-revisão do PR #21 (abaixo) alteraram `MainWindow` e `main.cpp`.
 
 ## Testes novos (`tests/mainwindow_test.cpp`)
 
@@ -80,3 +80,19 @@ Limitação das capturas: o platform offscreen não aplica geometria de tela rea
 ## Resultado
 
 Task 7 concluída: regressão de paleta estática registrada, recarga ao vivo dependente apenas do watcher/debounce existentes, suíte completa verde em Debug e Release, benchmark com mediana registrada e capturas dos dois menus nos três presets e a 320 px.
+
+## Ajustes pós-revisão do PR #21 (2026-11-28)
+
+Pedidos do usuário com o PR em rascunho; BASE desta rodada `1579fa4`.
+
+1. **Terceiro menu removido.** `m_moreAct`/`moreMenu` saíram da toolbar e do código. O submenu `Interface` (Compacta/Equilibrada/Avançada, Restaurar padrões, Personalizar…) passou a viver em `Arquivos`, ao lado de `Preferências…`; nenhum comando ficou órfão. `syncToolbarActions()` agora só controla presença na toolbar — as ações recolhidas continuam em `Arquivos`/`Visualização`. Os três presets seguem acessíveis e marcados, verificado nos três por `onlyTwoMenusKeepEveryCommand`.
+2. **Fonte efetiva do tema repassada.** `main.cpp` resolve `--theme-file` > `FM_THEME_FILE` > `QSettings` > padrão e chama `MainWindow::setThemeFile(path)`. `Nova janela` emite `newWindowRequested(args)` com `--theme-file <caminho>` quando há fonte; `main.cpp` conecta o sinal a `QProcess::startDetached(applicationFilePath(), args)`. O executor fica no composition root para que os testes não iniciem subprocessos. `newWindowForwardsEffectiveThemeFile` escreve um `theme.json` temporário e confere os três argumentos, além do caso sem tema (somente a pasta).
+
+RED → GREEN: `onlyTwoMenusKeepEveryCommand` falhou em runtime enquanto `moreMenu` existia; `newWindowForwardsEffectiveThemeFile` falhou em compilação (`setThemeFile`/`newWindowRequested` ausentes). Durante o GREEN, uma primeira versão com `startDetached` dentro do `MainWindow` chegou a iniciar o próprio binário de teste como efeito colateral; o connect foi movido para `main.cpp` e o efeito desapareceu. Uma primeira posição do submenu `Interface` no fim de `Visualização` deslocou o sufixo esperado por `viewMenuSeparatesZoomFromGridLegends` e os índices fixos de `sortIsPerTabAndSurvivesRefresh`; mover `Interface` para `Arquivos` preservou o contrato do menu de visualização sem reescrever esses testes.
+
+| Rodada | Build | CTest | Tempo | `warning:` |
+|---|---|---|---|---|
+| Ajustes pós-revisão | Debug | **6/6, 100%** | 6,39 s | 0 |
+| Ajustes pós-revisão | Release | **6/6, 100%** | 6,51 s | 0 |
+
+`mainwindow_test` passou de 37 para 39 casos; contagem total agora 128 casos QTest + 1 smoke. O benchmark de 140,5 ms **não foi repetido** nesta rodada (mudança é de montagem de menus e argumentos, não de hot path de pintura); o número do corpo do PR continua como medição da rodada anterior, com as mesmas ressalvas de não pareamento. Capturas existentes mostram o terceiro botão na Equilibrada a 900 px e precisam ser refeitas após esta mudança antes de sair do rascunho.

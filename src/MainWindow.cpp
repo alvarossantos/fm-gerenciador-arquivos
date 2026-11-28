@@ -22,7 +22,6 @@
 #include <QMessageBox>
 #include <QPaintEvent>
 #include <QPoint>
-#include <QProcess>
 #include <QResizeEvent>
 #include <QSettings>
 #include <QShortcut>
@@ -193,7 +192,10 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     newWindowAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_N));
     connect(newWindowAct, &QAction::triggered, this, [this] {
         const QString path = currentTab() ? currentTab()->currentPath() : QDir::homePath();
-        QProcess::startDetached(QCoreApplication::applicationFilePath(), {path});
+        QStringList args{path};
+        if (!m_themeFile.isEmpty())
+            args << QStringLiteral("--theme-file") << m_themeFile;
+        emit newWindowRequested(args);
     });
     m_filesMenu->addAction(newWindowAct);
     m_filesMenu->addAction(m_newTabAct);
@@ -212,6 +214,18 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     preferencesAct->setObjectName(QStringLiteral("preferencesAction"));
     connect(preferencesAct, &QAction::triggered, this, &MainWindow::openCustomizeDialog);
     m_filesMenu->addAction(preferencesAct);
+
+    auto *interfaceMenu = m_filesMenu->addMenu(tr("Interface"));
+    interfaceMenu->setObjectName(QStringLiteral("interfaceMenu"));
+    m_presetCompactAct = interfaceMenu->addAction(tr("Compacta"));
+    m_presetBalancedAct = interfaceMenu->addAction(tr("Equilibrada"));
+    m_presetAdvancedAct = interfaceMenu->addAction(tr("Avançada"));
+    for (QAction *a : {m_presetCompactAct, m_presetBalancedAct, m_presetAdvancedAct})
+        a->setCheckable(true);
+    m_restoreDefaultsAct = interfaceMenu->addAction(tr("Restaurar padrões"));
+    QAction *customizeAct = interfaceMenu->addAction(tr("Personalizar…"));
+    connect(customizeAct, &QAction::triggered, this, &MainWindow::openCustomizeDialog);
+
     m_filesMenu->addSeparator();
 
     auto *shortcutsAct = new QAction(tr("Atalhos de teclado"), this);
@@ -257,26 +271,6 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_viewMenu->addSeparator();
     m_viewMenu->addAction(m_gridSizeAct);
     m_viewMenu->addAction(m_gridDateAct);
-
-    m_moreAct = new QAction(style()->standardIcon(QStyle::SP_ToolBarHorizontalExtensionButton),
-                            QString(), this);
-    m_moreAct->setObjectName(QStringLiteral("moreMenu"));
-    m_moreAct->setToolTip(tr("Mais opções"));
-    auto *moreMenu = new QMenu(this);
-    moreMenu->setObjectName(QStringLiteral("moreMenu"));
-    m_moreAct->setMenu(moreMenu);
-    tb->addAction(m_moreAct);
-
-    auto *interfaceMenu = moreMenu->addMenu(tr("Interface"));
-    interfaceMenu->setObjectName(QStringLiteral("interfaceMenu"));
-    m_presetCompactAct = interfaceMenu->addAction(tr("Compacta"));
-    m_presetBalancedAct = interfaceMenu->addAction(tr("Equilibrada"));
-    m_presetAdvancedAct = interfaceMenu->addAction(tr("Avançada"));
-    for (QAction *a : {m_presetCompactAct, m_presetBalancedAct, m_presetAdvancedAct})
-        a->setCheckable(true);
-    m_restoreDefaultsAct = interfaceMenu->addAction(tr("Restaurar padrões"));
-    QAction *customizeAct = interfaceMenu->addAction(tr("Personalizar…"));
-    connect(customizeAct, &QAction::triggered, this, &MainWindow::openCustomizeDialog);
 
     for (QAction *a : {m_back, m_forward, m_up, m_listAct, m_iconsAct, m_previewAct, m_hiddenAct,
                        m_zoomInAct, m_zoomOutAct, m_zoomResetAct, m_newTabAct, newWindowAct})
@@ -455,7 +449,7 @@ void MainWindow::syncToolbar()
 
 void MainWindow::syncToolbarActions()
 {
-    if (!m_toolbar || !m_moreAct)
+    if (!m_toolbar)
         return;
 
     const bool narrow = width() < 720;
@@ -474,22 +468,14 @@ void MainWindow::syncToolbarActions()
         {m_zoomInAct, showExtras}, {m_zoomOutAct, showExtras}, {m_zoomResetAct, showExtras},
         {m_newTabAct, showNew},
     };
-    QMenu *menu = m_moreAct->menu();
-
     for (const Rule &rule : rules) {
         if (!rule.action)
             continue;
         const bool inToolbar = m_toolbar->actions().contains(rule.action);
-        if (rule.visible) {
-            menu->removeAction(rule.action);
-            if (!inToolbar)
-                m_toolbar->insertAction(m_moreAct, rule.action);
-        } else {
-            if (inToolbar)
-                m_toolbar->removeAction(rule.action);
-            if (!menu->actions().contains(rule.action))
-                menu->addAction(rule.action);
-        }
+        if (rule.visible && !inToolbar)
+            m_toolbar->addAction(rule.action);
+        else if (!rule.visible && inToolbar)
+            m_toolbar->removeAction(rule.action);
     }
 }
 

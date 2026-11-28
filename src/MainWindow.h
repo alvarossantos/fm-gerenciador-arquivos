@@ -1,5 +1,6 @@
 #pragma once
 #include <QMainWindow>
+#include <QStringList>
 
 #include "UiPreferences.h"
 
@@ -22,9 +23,11 @@ public:
     void setBenchMode(bool on);
     void applyUiPreferences(const UiPreferences &prefs);
     UiPreferences uiPreferences() const;
+    void setThemeFile(const QString &path) { m_themeFile = path; }
 
 signals:
     void firstPaint();
+    void newWindowRequested(const QStringList &args);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -67,7 +70,6 @@ private:
     QAction *m_gridSizeAct = nullptr;
     QAction *m_gridDateAct = nullptr;
     QAction *m_newTabAct = nullptr;
-    QAction *m_moreAct = nullptr;
     QAction *m_presetCompactAct = nullptr;
     QAction *m_presetBalancedAct = nullptr;
     QAction *m_presetAdvancedAct = nullptr;
@@ -78,6 +80,7 @@ private:
     QMenu *m_viewMenu = nullptr;
     QMenu *m_showAllTabsMenu = nullptr;
     UiPreferences m_ui;
+    QString m_themeFile;
     int m_breadcrumbLimit = 4;
     bool m_bench = false;
     bool m_painted = false;

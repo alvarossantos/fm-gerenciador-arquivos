@@ -303,6 +303,8 @@ private slots:
     void viewModeSwitchesBothWaysFromToolbarAndContextMenu();
     void viewMenuSharesToolbarStateAcrossTabs();
     void sharedActionsSurviveToolbarRemoval();
+    void onlyTwoMenusKeepEveryCommand();
+    void newWindowForwardsEffectiveThemeFile();
     void narrowWindowKeepsActionsAndAncestors();
     void breadcrumbLimitPerPreset();
     void switchPresetResetsManualAdjustments();
@@ -1149,9 +1151,13 @@ void MainWindowTest::sharedActionsSurviveToolbarRemoval()
     QVERIFY2(choosePreset(&w, QStringLiteral("Compacta")), "ação Compacta ausente");
     QApplication::processEvents();
 
-    auto *more = w.findChild<QMenu *>(QStringLiteral("moreMenu"));
+    auto *files = w.findChild<QMenu *>(QStringLiteral("filesMenu"));
+    auto *view = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
     auto *tb = toolbar(&w);
-    QVERIFY(more && tb);
+    QVERIFY(files && view && tb);
+    const auto inMenus = [files, view](const QString &text) {
+        return menuAction(files, text) || menuAction(view, text);
+    };
     QAction *icons = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
     QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
     QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
@@ -1161,9 +1167,9 @@ void MainWindowTest::sharedActionsSurviveToolbarRemoval()
     QVERIFY2(tb->widgetForAction(icons) == nullptr, "Grade de ícones ainda na toolbar");
     QVERIFY2(tb->widgetForAction(list) == nullptr, "Lista detalhada ainda na toolbar");
     QVERIFY2(tb->widgetForAction(zoomIn) == nullptr, "zoom ainda na toolbar");
-    QCOMPARE(menuAction(more, icons->text()), icons);
-    QCOMPARE(menuAction(more, list->text()), list);
-    QCOMPARE(menuAction(more, zoomIn->text()), zoomIn);
+    QVERIFY2(inMenus(icons->text()), "Grade de ícones fora dos dois menus");
+    QVERIFY2(inMenus(list->text()), "Lista detalhada fora dos dois menus");
+    QVERIFY2(inMenus(zoomIn->text()), "zoom fora dos dois menus");
     QCOMPARE(zoomIn->shortcut(), zoomShortcut);
     QCOMPARE(w.actions().count(icons), 1);
     QCOMPARE(w.actions().count(list), 1);
@@ -1187,6 +1193,91 @@ void MainWindowTest::sharedActionsSurviveToolbarRemoval()
     }
 }
 
+void MainWindowTest::onlyTwoMenusKeepEveryCommand()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+
+    auto *files = w.findChild<QMenu *>(QStringLiteral("filesMenu"));
+    auto *view = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    QVERIFY(files && view);
+    QVERIFY2(!w.findChild<QAction *>(QStringLiteral("moreMenu")),
+             "terceiro menu Mais opções ainda presente");
+    QVERIFY2(!w.findChild<QMenu *>(QStringLiteral("moreMenu")),
+             "menu Mais opções ainda presente");
+
+    const auto inMenus = [files, view](const QString &text) {
+        return menuAction(files, text) || menuAction(view, text);
+    };
+    for (const QString &label : {
+             QStringLiteral("Nova janela"), QStringLiteral("Nova aba (Ctrl+T)"),
+             QStringLiteral("Lista detalhada"), QStringLiteral("Grade de ícones"),
+             QStringLiteral("Painel de pré-visualização (F11)"),
+             QStringLiteral("Mostrar arquivos ocultos (Ctrl+H)"),
+             QStringLiteral("Aumentar zoom"), QStringLiteral("Diminuir zoom"),
+             QStringLiteral("Zoom original"),
+             QStringLiteral("Mostrar tamanho na grade"), QStringLiteral("Mostrar data na grade")}) {
+        QVERIFY2(inMenus(label), qPrintable(QStringLiteral("comando fora dos dois menus: ") + label));
+    }
+
+    auto *interfaceMenu = w.findChild<QMenu *>(QStringLiteral("interfaceMenu"));
+    QVERIFY2(interfaceMenu, "submenu Interface ausente");
+    QVERIFY2(files->actions().contains(interfaceMenu->menuAction())
+                 || view->actions().contains(interfaceMenu->menuAction()),
+             "submenu Interface não está em Arquivos nem Visualização");
+
+    for (const QString &preset : {QStringLiteral("Compacta"), QStringLiteral("Equilibrada"),
+                                  QStringLiteral("Avançada")}) {
+        QVERIFY2(choosePreset(&w, preset), qPrintable(preset + QStringLiteral(" inacessível")));
+        QVERIFY2(menuAction(interfaceMenu, preset)->isChecked(),
+                 qPrintable(preset + QStringLiteral(" não ficou marcada")));
+    }
+}
+
+void MainWindowTest::newWindowForwardsEffectiveThemeFile()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+    const QString theme = QDir(root.path()).filePath(QStringLiteral("theme.json"));
+    QFile themeFile(theme);
+    QVERIFY(themeFile.open(QIODevice::WriteOnly));
+    QVERIFY(themeFile.write("{\"colors\":{\"dark\":{\"primary\":\"#123456\"}}}") > 0);
+    themeFile.close();
+
+    MainWindow w(home);
+    w.setThemeFile(theme);
+    QSignalSpy spy(&w, &MainWindow::newWindowRequested);
+    QVERIFY(spy.isValid());
+    QAction *action = w.findChild<QAction *>(QStringLiteral("newWindowAction"));
+    QVERIFY(action);
+    action->trigger();
+    QCOMPARE(spy.count(), 1);
+    const QStringList args = spy.takeFirst().at(0).toStringList();
+    QCOMPARE(args.size(), 3);
+    QCOMPARE(args.at(0), home);
+    QCOMPARE(args.at(1), QStringLiteral("--theme-file"));
+    QCOMPARE(args.at(2), theme);
+
+    MainWindow w2(home);
+    QSignalSpy spy2(&w2, &MainWindow::newWindowRequested);
+    QVERIFY(spy2.isValid());
+    QAction *action2 = w2.findChild<QAction *>(QStringLiteral("newWindowAction"));
+    QVERIFY(action2);
+    action2->trigger();
+    QCOMPARE(spy2.count(), 1);
+    QCOMPARE(spy2.takeFirst().at(0).toStringList(), QStringList{home});
+}
+
 void MainWindowTest::narrowWindowKeepsActionsAndAncestors()
 {
     TempConfig config;
@@ -1202,17 +1293,21 @@ void MainWindowTest::narrowWindowKeepsActionsAndAncestors()
     QVERIFY(choosePreset(&w, QStringLiteral("Compacta")));
     QApplication::processEvents();
 
-    auto *more = w.findChild<QMenu *>(QStringLiteral("moreMenu"));
+    auto *files = w.findChild<QMenu *>(QStringLiteral("filesMenu"));
+    auto *view = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
     auto *tb = toolbar(&w);
-    QVERIFY(more && tb);
+    QVERIFY(files && view && tb);
+    const auto inMenus = [files, view](const QString &text) {
+        return menuAction(files, text) || menuAction(view, text);
+    };
     QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
     QAction *preview = findAction(&w, QStringLiteral("Painel de pré-visualização"));
     QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
     QVERIFY(list && preview && zoomIn);
     QVERIFY2(tb->widgetForAction(list) == nullptr, "Lista detalhada ainda na toolbar estreita");
-    QCOMPARE(menuAction(more, list->text()), list);
-    QCOMPARE(menuAction(more, preview->text()), preview);
-    QCOMPARE(menuAction(more, zoomIn->text()), zoomIn);
+    QVERIFY2(inMenus(list->text()), "Lista detalhada fora dos dois menus na janela estreita");
+    QVERIFY2(inMenus(preview->text()), "Pré-visualização fora dos dois menus na janela estreita");
+    QVERIFY2(inMenus(zoomIn->text()), "zoom fora dos dois menus na janela estreita");
 
     w.activateWindow();
     QTest::keyClick(&w, Qt::Key_L, Qt::ControlModifier);
