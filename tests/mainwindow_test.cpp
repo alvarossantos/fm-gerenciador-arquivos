@@ -8,13 +8,18 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QHBoxLayout>
+#include <QItemSelectionModel>
 #include <QListWidget>
 #include <QKeySequence>
 #include <QPushButton>
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
+#include <QMessageBox>
+#include <QPoint>
 #include <QScopeGuard>
 #include <QSettings>
 #include <QStackedWidget>
@@ -86,6 +91,18 @@ QStringList viewMenuLabels(QMenu *menu)
     for (QAction *a : menu->actions())
         labels << (a->isSeparator() ? QStringLiteral("---") : a->text());
     return labels;
+}
+
+QModelIndex findRowNamed(QTreeView *view, const QString &name)
+{
+    if (!view)
+        return {};
+    for (int row = 0; row < view->model()->rowCount(view->rootIndex()); ++row) {
+        const QModelIndex index = view->model()->index(row, 0, view->rootIndex());
+        if (view->model()->data(index).toString() == name)
+            return index;
+    }
+    return {};
 }
 
 void closePopups()
@@ -197,6 +214,9 @@ private slots:
     void previewTogglePersistsAfterRestart();
     void customizeActionOpensDialog();
     void customizeDialogPersistsManualAdjustments();
+    void keyboardOpensMenusAt320InEveryPreset();
+    void tabsMenuUsesFullPathForDuplicates();
+    void localDialogsHaveReadableText();
 };
 
 void MainWindowTest::shortcutActionsHaveReadableLabels()
@@ -1300,6 +1320,222 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
     expected.preview = true;
     QVERIFY2(samePreferences(restarted.uiPreferences(), expected),
              "ajustes manuais não sobreviveram ao reinício");
+}
+
+void MainWindowTest::keyboardOpensMenusAt320InEveryPreset()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.resize(320, 600);
+    w.show();
+    QApplication::processEvents();
+
+    auto *tb = toolbar(&w);
+    QVERIFY(tb);
+    auto *files = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
+    auto *view = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
+    QVERIFY(files && view);
+    QCOMPARE(files->popupMode(), QToolButton::InstantPopup);
+    QCOMPARE(view->popupMode(), QToolButton::InstantPopup);
+    QVERIFY(files->menu() && view->menu());
+    QCOMPARE(files->menu()->objectName(), QStringLiteral("filesMenu"));
+    QCOMPARE(view->menu()->objectName(), QStringLiteral("viewMenu"));
+
+    for (const QString &preset : { QStringLiteral("Compacta"), QStringLiteral("Equilibrada"),
+                                   QStringLiteral("Avançada") }) {
+        QVERIFY(choosePreset(&w, preset));
+        w.resize(320, 600);
+        w.activateWindow();
+        QApplication::processEvents();
+
+        for (QToolButton *button : {files, view}) {
+            if (auto *tab = w.findChild<FileTab *>())
+                tab->setFocus(); // reinicia a cadeia de foco como numa janela recém-aberta
+            QVERIFY2(button->isVisible(), "Botão de menu desapareceu a 320 px");
+            bool reached = false;
+            for (int press = 0; press < 30; ++press) {
+                QWidget *focus = QApplication::focusWidget();
+                QTest::keyClick(focus ? focus : static_cast<QWidget *>(&w), Qt::Key_Tab);
+                if (QApplication::focusWidget() == button) {
+                    reached = true;
+                    break;
+                }
+            }
+            QVERIFY2(reached, qPrintable(QStringLiteral("%1: Tab não alcançou %2 em 30 teclas")
+                                             .arg(preset, button->objectName())));
+            QVERIFY(button->hasFocus());
+
+            for (Qt::Key key : {Qt::Key_Space, Qt::Key_Return, Qt::Key_Enter}) {
+                if (QApplication::focusWidget() != button)
+                    button->setFocus();
+                QTest::keyClick(button, key);
+                QVERIFY2(button->menu()->isVisible(),
+                         qPrintable(QStringLiteral("%1: %2 não abriu com a tecla %3")
+                                        .arg(preset, button->objectName(), QString::number(int(key)))));
+                QWidget *popup = qApp->activePopupWidget();
+                QTest::keyClick(popup ? popup : static_cast<QWidget *>(button), Qt::Key_Escape);
+                QVERIFY2(!button->menu()->isVisible(), "Esc não fechou o menu");
+                closePopups();
+            }
+        }
+    }
+}
+
+void MainWindowTest::tabsMenuUsesFullPathForDuplicates()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString firstDir =
+        QFileInfo(QDir(root.path()).filePath(QStringLiteral("a/proj"))).absoluteFilePath();
+    const QString secondDir =
+        QFileInfo(QDir(root.path()).filePath(QStringLiteral("b/proj"))).absoluteFilePath();
+    const QString nested = QDir(firstDir).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(nested));
+    QVERIFY(QDir().mkpath(secondDir));
+    QFile file(QDir(firstDir).filePath(QStringLiteral("alvo.txt")));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("alvo\n");
+    file.close();
+
+    MainWindow w(firstDir);
+    w.show();
+    QApplication::processEvents();
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+
+    auto *first = static_cast<FileTab *>(tabs->widget(0));
+    QVERIFY(first);
+    // Histórico primeiro; a seleção de arquivo vem depois, antes de trocar de aba.
+    QVERIFY(first->goTo(nested));
+    QVERIFY(first->goTo(firstDir)); // volta navegando: histórico fica com Voltar habilitado
+    QVERIFY(first->canGoBack());
+    QCOMPARE(first->currentPath(), firstDir);
+    auto *tree = first->findChild<QTreeView *>();
+    QVERIFY(tree);
+    const QModelIndex target = findRowNamed(tree, QStringLiteral("alvo.txt"));
+    QVERIFY(target.isValid());
+    tree->selectionModel()->setCurrentIndex(target, QItemSelectionModel::ClearAndSelect
+                                                  | QItemSelectionModel::Rows);
+    QCOMPARE(tree->selectionModel()->currentIndex().data().toString(), QStringLiteral("alvo.txt"));
+
+    QAction *newTab = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTab);
+    newTab->trigger();
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 2);
+    auto *second = static_cast<FileTab *>(tabs->widget(1));
+    QVERIFY(second);
+    QVERIFY(second->goTo(secondDir));
+    QApplication::processEvents();
+    QCOMPARE(tabs->tabText(0), tabs->tabText(1));
+
+    tabs->setCurrentIndex(0);
+    QApplication::processEvents();
+    auto *menu = w.findChild<QMenu *>(QStringLiteral("showAllTabsMenu"));
+    QVERIFY(menu);
+    auto openTabsMenu = [&]() {
+        menu->popup(QPoint(10, 10));
+        QApplication::processEvents();
+        return menu->actions();
+    };
+
+    QList<QAction *> items = openTabsMenu();
+    QCOMPARE(items.size(), 2);
+    QCOMPARE(items.at(0)->text(), firstDir);
+    QCOMPARE(items.at(1)->text(), secondDir);
+    QVERIFY(items.at(0)->isCheckable() && items.at(1)->isCheckable());
+    QVERIFY(items.at(0)->isChecked());
+    QVERIFY(!items.at(1)->isChecked());
+
+    QTest::keyClick(menu, Qt::Key_Down);
+    QCOMPARE(menu->activeAction(), items.at(0));
+    QTest::keyClick(menu, Qt::Key_Down);
+    QCOMPARE(menu->activeAction(), items.at(1));
+    QTest::keyClick(menu, Qt::Key_Up);
+    QCOMPARE(menu->activeAction(), items.at(0));
+    QTest::keyClick(menu, Qt::Key_Down);
+    QTest::keyClick(menu, Qt::Key_Return);
+    QApplication::processEvents();
+    QCOMPARE(tabs->currentIndex(), 1);
+    closePopups();
+
+    // A aba 1 guarda caminho, seleção e histórico enquanto está inativa.
+    QCOMPARE(first->currentPath(), firstDir);
+    QVERIFY(first->canGoBack());
+    QCOMPARE(tree->selectionModel()->currentIndex().data().toString(), QStringLiteral("alvo.txt"));
+
+    items = openTabsMenu();
+    QCOMPARE(items.size(), 2);
+    QVERIFY(!items.at(0)->isChecked());
+    QVERIFY(items.at(1)->isChecked());
+    QTest::keyClick(menu, Qt::Key_Down);
+    QTest::keyClick(menu, Qt::Key_Escape);
+    QApplication::processEvents();
+    QVERIFY(!menu->isVisible());
+    QCOMPARE(tabs->currentIndex(), 1);
+    closePopups();
+
+    items = openTabsMenu();
+    QCOMPARE(items.size(), 2);
+    QTest::keyClick(menu, Qt::Key_Down);
+    QTest::keyClick(menu, Qt::Key_Return);
+    QApplication::processEvents();
+    closePopups();
+
+    QCOMPARE(tabs->currentIndex(), 0);
+    QCOMPARE(first->currentPath(), firstDir);
+    QCOMPARE(tree->selectionModel()->currentIndex().data().toString(), QStringLiteral("alvo.txt"));
+    QVERIFY(findAction(&w, QStringLiteral("Voltar"))->isEnabled());
+}
+
+void MainWindowTest::localDialogsHaveReadableText()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+
+    auto *shortcuts = w.findChild<QAction *>(QStringLiteral("shortcutsAction"));
+    auto *help = w.findChild<QAction *>(QStringLiteral("helpAction"));
+    auto *about = w.findChild<QAction *>(QStringLiteral("aboutAction"));
+    QVERIFY(shortcuts && help && about);
+
+    auto dialogText = [](QAction *action) {
+        QString text;
+        QTimer::singleShot(0, [&] {
+            const auto topLevel = qApp->topLevelWidgets();
+            for (QWidget *widget : topLevel) {
+                if (auto *box = qobject_cast<QMessageBox *>(widget)) {
+                    text = box->text();
+                    box->done(QMessageBox::Ok);
+                    return;
+                }
+            }
+        });
+        action->trigger();
+        QApplication::processEvents();
+        closePopups();
+        return text;
+    };
+
+    const QString shortcutsText = dialogText(shortcuts);
+    QVERIFY2(shortcutsText.contains(QStringLiteral("Editar caminho")), "Ctrl+L ausente nos atalhos");
+    QVERIFY2(shortcutsText.contains(QStringLiteral("Ctrl+L")), "Ctrl+L ausente nos atalhos");
+    QVERIFY2(shortcutsText.contains(QStringLiteral("Fechar aba")), "Ctrl+W ausente nos atalhos");
+    QVERIFY2(shortcutsText.contains(QStringLiteral("Ctrl+W")), "Ctrl+W ausente nos atalhos");
+    QVERIFY2(!dialogText(help).isEmpty(), "Ajuda sem texto");
+    QVERIFY2(!dialogText(about).isEmpty(), "Sobre o fm sem texto");
 }
 
 QTEST_MAIN(MainWindowTest)

@@ -27,6 +27,7 @@ signals:
     void firstPaint();
 
 protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *e) override;
     void paintEvent(QPaintEvent *e) override;
     void resizeEvent(QResizeEvent *e) override;
@@ -43,6 +44,10 @@ private:
     void beginPathEdit();
     void endPathEdit();
     void openCustomizeDialog();
+    void rebuildTabsMenu();
+    void openShortcutsDialog();
+    void openHelpDialog();
+    void openAboutDialog();
 
     QTabWidget *m_tabs;
     QWidget *m_pathContainer;
@@ -61,6 +66,11 @@ private:
     QAction *m_presetBalancedAct = nullptr;
     QAction *m_presetAdvancedAct = nullptr;
     QAction *m_restoreDefaultsAct = nullptr;
+    QToolButton *m_filesMenuButton = nullptr;
+    QToolButton *m_viewMenuButton = nullptr;
+    QMenu *m_filesMenu = nullptr;
+    QMenu *m_viewMenu = nullptr;
+    QMenu *m_showAllTabsMenu = nullptr;
     UiPreferences m_ui;
     int m_breadcrumbLimit = 4;
     bool m_bench = false;

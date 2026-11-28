@@ -11,12 +11,18 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEvent>
 #include <QFontMetrics>
 #include <QFormLayout>
+#include <QHash>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPaintEvent>
+#include <QPoint>
+#include <QProcess>
 #include <QResizeEvent>
 #include <QSettings>
 #include <QShortcut>
@@ -61,6 +67,19 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
         return QIcon::fromTheme(QLatin1String(name), style()->standardIcon(fb));
     };
 
+    m_filesMenuButton = new QToolButton(tb);
+    m_filesMenuButton->setObjectName(QStringLiteral("filesMenuButton"));
+    m_filesMenuButton->setText(tr("Arquivos"));
+    m_filesMenuButton->setIcon(icon("document-open", QStyle::SP_FileIcon));
+    m_filesMenuButton->setToolTip(tr("Arquivos"));
+    m_filesMenuButton->setAccessibleName(tr("Arquivos"));
+    m_filesMenuButton->setPopupMode(QToolButton::InstantPopup);
+    m_filesMenu = new QMenu(m_filesMenuButton);
+    m_filesMenu->setObjectName(QStringLiteral("filesMenu"));
+    m_filesMenuButton->setMenu(m_filesMenu);
+    m_filesMenuButton->installEventFilter(this);
+    tb->addWidget(m_filesMenuButton);
+
     m_back = tb->addAction(icon("go-previous", QStyle::SP_ArrowBack), tr("Voltar"));
     m_forward = tb->addAction(icon("go-next", QStyle::SP_ArrowForward), tr("Avançar"));
     m_up = tb->addAction(icon("go-up", QStyle::SP_ArrowUp), tr("Subir"));
@@ -97,6 +116,19 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     pathContainerLayout->addWidget(m_pathEdit);
     tb->addWidget(m_pathContainer);
 
+    m_viewMenuButton = new QToolButton(tb);
+    m_viewMenuButton->setObjectName(QStringLiteral("viewMenuButton"));
+    m_viewMenuButton->setText(tr("Visualização"));
+    m_viewMenuButton->setIcon(icon("view-list-details", QStyle::SP_FileDialogListView));
+    m_viewMenuButton->setToolTip(tr("Visualização"));
+    m_viewMenuButton->setAccessibleName(tr("Visualização"));
+    m_viewMenuButton->setPopupMode(QToolButton::InstantPopup);
+    m_viewMenu = new QMenu(m_viewMenuButton);
+    m_viewMenu->setObjectName(QStringLiteral("viewMenu"));
+    m_viewMenuButton->setMenu(m_viewMenu);
+    m_viewMenuButton->installEventFilter(this);
+    tb->addWidget(m_viewMenuButton);
+
     m_listAct = tb->addAction(QIcon::fromTheme("view-list-details"), tr("Lista detalhada"));
     m_listAct->setObjectName(QStringLiteral("listViewAction"));
     m_listAct->setCheckable(true);
@@ -124,6 +156,56 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     m_newTabAct = tb->addAction(QIcon::fromTheme("tab-new"), tr("Nova aba (Ctrl+T)"));
     m_newTabAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
 
+    auto *newWindowAct = new QAction(icon("window-new", QStyle::SP_FileDialogNewFolder),
+                                     tr("Nova janela"), this);
+    newWindowAct->setObjectName(QStringLiteral("newWindowAction"));
+    newWindowAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_N));
+    connect(newWindowAct, &QAction::triggered, this, [this] {
+        const QString path = currentTab() ? currentTab()->currentPath() : QDir::homePath();
+        QProcess::startDetached(QCoreApplication::applicationFilePath(), {path});
+    });
+    m_filesMenu->addAction(newWindowAct);
+    m_filesMenu->addAction(m_newTabAct);
+    m_filesMenu->addSeparator();
+
+    auto *showAllTabsAct = new QAction(tr("Mostrar todas as abas"), this);
+    showAllTabsAct->setObjectName(QStringLiteral("showAllTabsAction"));
+    m_showAllTabsMenu = new QMenu(m_filesMenu);
+    m_showAllTabsMenu->setObjectName(QStringLiteral("showAllTabsMenu"));
+    showAllTabsAct->setMenu(m_showAllTabsMenu);
+    connect(m_showAllTabsMenu, &QMenu::aboutToShow, this, &MainWindow::rebuildTabsMenu);
+    m_filesMenu->addAction(showAllTabsAct);
+    m_filesMenu->addSeparator();
+
+    auto *preferencesAct = new QAction(tr("Preferências…"), this);
+    preferencesAct->setObjectName(QStringLiteral("preferencesAction"));
+    connect(preferencesAct, &QAction::triggered, this, &MainWindow::openCustomizeDialog);
+    m_filesMenu->addAction(preferencesAct);
+    m_filesMenu->addSeparator();
+
+    auto *shortcutsAct = new QAction(tr("Atalhos de teclado"), this);
+    shortcutsAct->setObjectName(QStringLiteral("shortcutsAction"));
+    connect(shortcutsAct, &QAction::triggered, this, &MainWindow::openShortcutsDialog);
+    auto *helpAct = new QAction(tr("Ajuda"), this);
+    helpAct->setObjectName(QStringLiteral("helpAction"));
+    connect(helpAct, &QAction::triggered, this, &MainWindow::openHelpDialog);
+    auto *aboutAct = new QAction(tr("Sobre o fm"), this);
+    aboutAct->setObjectName(QStringLiteral("aboutAction"));
+    connect(aboutAct, &QAction::triggered, this, &MainWindow::openAboutDialog);
+    m_filesMenu->addAction(shortcutsAct);
+    m_filesMenu->addAction(helpAct);
+    m_filesMenu->addAction(aboutAct);
+
+    m_viewMenu->addAction(m_listAct);
+    m_viewMenu->addAction(m_iconsAct);
+    m_viewMenu->addSeparator();
+    m_viewMenu->addAction(m_hiddenAct);
+    m_viewMenu->addAction(m_previewAct);
+    m_viewMenu->addSeparator();
+    m_viewMenu->addAction(m_zoomOutAct);
+    m_viewMenu->addAction(m_zoomInAct);
+    m_viewMenu->addAction(m_zoomResetAct);
+
     m_moreAct = new QAction(style()->standardIcon(QStyle::SP_ToolBarHorizontalExtensionButton),
                             QString(), this);
     m_moreAct->setObjectName(QStringLiteral("moreMenu"));
@@ -145,7 +227,7 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     connect(customizeAct, &QAction::triggered, this, &MainWindow::openCustomizeDialog);
 
     for (QAction *a : {m_back, m_forward, m_up, m_listAct, m_iconsAct, m_previewAct, m_hiddenAct,
-                       m_zoomInAct, m_zoomOutAct, m_zoomResetAct, m_newTabAct})
+                       m_zoomInAct, m_zoomOutAct, m_zoomResetAct, m_newTabAct, newWindowAct})
         addAction(a); // garante que os atalhos funcionem em toda a janela
 
     auto *focusPath = new QAction(this);
@@ -311,6 +393,10 @@ void MainWindow::syncToolbarActions()
         return;
 
     const bool narrow = width() < 720;
+    const Qt::ToolButtonStyle menuStyle = narrow ? Qt::ToolButtonIconOnly : Qt::ToolButtonTextOnly;
+    m_filesMenuButton->setToolButtonStyle(menuStyle);
+    m_viewMenuButton->setToolButtonStyle(menuStyle);
+
     const bool compact = m_ui.preset == UiPreset::Compact || narrow;
     const bool showView = !compact;
     const bool showNew = m_ui.preset != UiPreset::Compact && !narrow;
@@ -375,6 +461,57 @@ void MainWindow::applyUiPreferences(const UiPreferences &prefs)
 UiPreferences MainWindow::uiPreferences() const
 {
     return m_ui;
+}
+
+void MainWindow::rebuildTabsMenu()
+{
+    if (!m_showAllTabsMenu || !m_tabs)
+        return;
+
+    m_showAllTabsMenu->clear();
+    QHash<QString, int> labels;
+    for (int i = 0; i < m_tabs->count(); ++i)
+        ++labels[m_tabs->tabText(i)];
+
+    for (int i = 0; i < m_tabs->count(); ++i) {
+        QString text = m_tabs->tabText(i);
+        auto *tab = qobject_cast<FileTab *>(m_tabs->widget(i));
+        if (labels.value(text) > 1 && tab)
+            text = tab->currentPath();
+        QAction *action = m_showAllTabsMenu->addAction(text);
+        action->setCheckable(true);
+        action->setChecked(i == m_tabs->currentIndex());
+        action->setData(i);
+        connect(action, &QAction::triggered, this, [this, i] { m_tabs->setCurrentIndex(i); });
+    }
+}
+
+void MainWindow::openShortcutsDialog()
+{
+    QStringList lines;
+    for (QAction *action : actions()) {
+        if (action->text().isEmpty())
+            continue;
+        QString line = action->text();
+        if (!action->shortcut().isEmpty())
+            line += QStringLiteral("\t") + action->shortcut().toString(QKeySequence::NativeText);
+        lines << line;
+    }
+    QMessageBox::information(this, tr("Atalhos de teclado"), lines.join(QLatin1Char('\n')));
+}
+
+void MainWindow::openHelpDialog()
+{
+    QMessageBox::information(this, tr("Ajuda"),
+                             tr("Use Voltar, Avançar e Subir para navegar; Ctrl+L edita o caminho. "
+                                "Abas trocam com a faixa ou o menu Arquivos, e os menus "
+                                "Arquivos e Visualização também abrem com o teclado."));
+}
+
+void MainWindow::openAboutDialog()
+{
+    QMessageBox::about(this, tr("Sobre o fm"),
+                       tr("fm — gerenciador de arquivos\nQt %1").arg(QLatin1String(QT_VERSION_STR)));
 }
 
 void MainWindow::openCustomizeDialog()
@@ -501,6 +638,10 @@ void MainWindow::rebuildBreadcrumb()
         m_pathLayout->addWidget(b);
         buttons.append(b);
     }
+    // O toolbar não faz o wrap sozinho a partir do último botão do breadcrumb.
+    // Ligá-lo ao menu Arquivos mantém os dois botões de menu alcançáveis por Tab.
+    if (m_filesMenuButton && !buttons.isEmpty())
+        QWidget::setTabOrder(buttons.last(), m_filesMenuButton);
 
     QVector<bool> visible(buttons.size(), true);
     bool overflowNeeded = false;
@@ -566,7 +707,29 @@ void MainWindow::rebuildBreadcrumb()
     m_overflow->setVisible(overflowNeeded);
     if (overflowNeeded)
         m_pathLayout->addWidget(m_overflow);
+    if (overflowNeeded) {
+        QWidget::setTabOrder(m_filesMenuButton, m_overflow);
+        QWidget::setTabOrder(m_overflow, m_viewMenuButton);
+    } else {
+        QWidget::setTabOrder(m_filesMenuButton, m_viewMenuButton);
+    }
     m_pathLayout->addStretch(1);
+}
+
+bool MainWindow::eventFilter(QObject *watched, QEvent *event)
+{
+    if ((event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)
+        && (watched == m_filesMenuButton || watched == m_viewMenuButton)) {
+        auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+            if (event->type() == QEvent::KeyPress) {
+                auto *button = static_cast<QToolButton *>(watched);
+                button->menu()->popup(button->mapToGlobal(QPoint(0, button->height())));
+            }
+            return true;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *e)
