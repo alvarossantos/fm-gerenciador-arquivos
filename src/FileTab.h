@@ -68,7 +68,7 @@ public:
     int zoom() const { return m_zoom; }
     void setPreviewVisible(bool visible);
     void setShowHidden(bool show);
-    void setViewActions(QAction *icons, QAction *preview, QAction *hidden,
+    void setViewActions(QAction *list, QAction *grid, QAction *preview, QAction *hidden,
                         QAction *zoomIn, QAction *zoomOut, QAction *zoomReset);
 
 signals:
@@ -134,6 +134,7 @@ private:
     QSize m_gridIconBase;
     QSize m_gridBase;
 
+    QAction *m_listAct = nullptr;
     QAction *m_iconsAct = nullptr;
     QAction *m_previewAct = nullptr;
     QAction *m_hiddenAct = nullptr;

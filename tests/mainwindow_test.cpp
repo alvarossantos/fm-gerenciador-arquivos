@@ -186,6 +186,8 @@ private slots:
     void zoomActionsReachActiveTab();
     void zoomActionsApplyToAllTabs();
     void newTabInheritsCurrentZoom();
+    void shortcutActionsHaveReadableLabels();
+    void viewModeSwitchesBothWaysFromToolbarAndContextMenu();
     void viewMenuSharesToolbarStateAcrossTabs();
     void sharedActionsSurviveToolbarRemoval();
     void narrowWindowKeepsActionsAndAncestors();
@@ -196,6 +198,72 @@ private slots:
     void customizeActionOpensDialog();
     void customizeDialogPersistsManualAdjustments();
 };
+
+void MainWindowTest::shortcutActionsHaveReadableLabels()
+{
+    MainWindow w(QDir::homePath());
+    auto *focus = w.findChild<QAction *>(QStringLiteral("focusPathAction"));
+    auto *close = w.findChild<QAction *>(QStringLiteral("closeTabAction"));
+    QVERIFY(focus && close);
+    QCOMPARE(focus->text(), QStringLiteral("Editar caminho"));
+    QCOMPARE(close->text(), QStringLiteral("Fechar aba"));
+    QCOMPARE(focus->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_L));
+    QCOMPARE(close->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_W));
+}
+
+void MainWindowTest::viewModeSwitchesBothWaysFromToolbarAndContextMenu()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    MainWindow w(root.path());
+    w.show();
+    QApplication::processEvents();
+
+    QAction *grid = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
+    QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
+    auto *tab = w.findChild<FileTab *>();
+    QVERIFY(grid && list && tab);
+    auto *stack = tab->findChild<QStackedWidget *>();
+    QVERIFY(stack);
+
+    auto verifyMode = [&](bool icons) {
+        QCOMPARE(grid->isChecked(), icons);
+        if (icons)
+            QVERIFY(qobject_cast<QListView *>(stack->currentWidget()));
+        else
+            QVERIFY(qobject_cast<QTreeView *>(stack->currentWidget()));
+    };
+    grid->trigger();
+    verifyMode(true);
+    list->trigger();
+    verifyMode(false);
+    grid->trigger();
+    verifyMode(true);
+
+    auto switchFromContextMenu = [&](const QString &label) {
+        bool triggered = false;
+        setContextMenuHookForTests([&](QMenu *menu, const QStringList &) {
+            QTimer::singleShot(0, [] { closePopups(); });
+            QMenu *view = nullptr;
+            for (QAction *action : menu->actions())
+                if (action->text() == QStringLiteral("Exibir"))
+                    view = action->menu();
+            QAction *action = menuAction(view, label);
+            if (action) {
+                triggered = true;
+                action->trigger();
+            }
+        });
+        const auto restore = qScopeGuard([] { setContextMenuHookForTests({}); });
+        QVERIFY(openEmptyContextMenu(tab));
+        QApplication::processEvents();
+        QVERIFY(triggered);
+    };
+    switchFromContextMenu(QStringLiteral("Lista detalhada"));
+    verifyMode(false);
+    switchFromContextMenu(QStringLiteral("Grade de ícones"));
+    verifyMode(true);
+}
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
 {
@@ -793,13 +861,14 @@ void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
     auto *tabs = w.findChild<QTabWidget *>();
     QVERIFY(tabs);
     QCOMPARE(tabs->count(), 1);
-    auto *iconsAct = findAction(&w, QStringLiteral("Visão em ícones"));
+    auto *iconsAct = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
+    auto *listAct = w.findChild<QAction *>(QStringLiteral("listViewAction"));
     auto *previewAct = findAction(&w, QStringLiteral("Painel de pré-visualização"));
     auto *hiddenAct = findAction(&w, QStringLiteral("Mostrar arquivos ocultos"));
     auto *zoomInAct = findAction(&w, QStringLiteral("Aumentar zoom"));
     auto *zoomOutAct = findAction(&w, QStringLiteral("Diminuir zoom"));
     auto *zoomResetAct = findAction(&w, QStringLiteral("Zoom original"));
-    QVERIFY(iconsAct && previewAct && hiddenAct && zoomInAct && zoomOutAct && zoomResetAct);
+    QVERIFY(iconsAct && listAct && previewAct && hiddenAct && zoomInAct && zoomOutAct && zoomResetAct);
     const int windowActions = w.actions().size();
 
     QAction *newTabAct = findAction(&w, QStringLiteral("Nova aba"));
@@ -847,8 +916,10 @@ void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
         noNewWindowActions = w.actions().size() == windowActions;
         QAction *details = menuAction(view, QStringLiteral("Lista detalhada"));
         QAction *grid = menuAction(view, QStringLiteral("Grade de ícones"));
-        localModes = details && grid && details->isCheckable() && grid->isCheckable()
-                     && details->shortcut().isEmpty() && grid->shortcut().isEmpty();
+        localModes = details == listAct && grid == iconsAct
+                     && details->isCheckable() && grid->isCheckable()
+                     && details->shortcut().isEmpty()
+                     && grid->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_1);
         gridFollowsToolbar = grid && grid->isChecked() == iconsAct->isChecked();
         injectedAreToolbarActions =
             menuAction(view, previewAct->text()) == previewAct
@@ -863,7 +934,7 @@ void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
     QVERIFY(injectedAreToolbarActions);
     QVERIFY(noNewWindowActions);
 
-    // Ação local do submenu aplica setChecked na ação compartilhada.
+    // Ação do submenu aplica setChecked na ação compartilhada.
     captureViewMenu(firstTab, [&](QMenu *, QMenu *view) {
         QAction *details = menuAction(view, QStringLiteral("Lista detalhada"));
         if (details)
@@ -897,7 +968,7 @@ void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
     QVERIFY(usesIconMode(firstTab));
     QVERIFY(usesIconMode(secondTab));
 
-    iconsAct->trigger(); // alternância pela barra
+    listAct->trigger(); // alternância pela barra
     QVERIFY(!iconsAct->isChecked());
     QVERIFY(!usesIconMode(firstTab));
     QVERIFY(!usesIconMode(secondTab));
@@ -936,7 +1007,7 @@ void MainWindowTest::sharedActionsSurviveToolbarRemoval()
     auto *more = w.findChild<QMenu *>(QStringLiteral("moreMenu"));
     auto *tb = toolbar(&w);
     QVERIFY(more && tb);
-    QAction *icons = findAction(&w, QStringLiteral("Visão em ícones"));
+    QAction *icons = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
     QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
     QVERIFY(icons && zoomIn);
     const QKeySequence zoomShortcut = zoomIn->shortcut();
@@ -1039,7 +1110,7 @@ void MainWindowTest::switchPresetResetsManualAdjustments()
     findAction(&w, QStringLiteral("Nova aba"))->trigger();
     QApplication::processEvents();
     findAction(&w, QStringLiteral("Aumentar zoom"))->trigger();
-    findAction(&w, QStringLiteral("Visão em ícones"))->trigger();
+    w.findChild<QAction *>(QStringLiteral("gridViewAction"))->trigger();
     QCOMPARE(static_cast<FileTab *>(tabs->widget(0))->zoom(), 125);
 
     QVERIFY(choosePreset(&w, QStringLiteral("Avançada")));

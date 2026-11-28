@@ -5,6 +5,7 @@
 
 class FileTab;
 class QAction;
+class QActionGroup;
 class QHBoxLayout;
 class QLineEdit;
 class QMenu;
@@ -51,7 +52,8 @@ private:
     QToolButton *m_overflow;
     QToolBar *m_toolbar = nullptr;
     QAction *m_back, *m_forward, *m_up;
-    QAction *m_iconsAct, *m_previewAct, *m_hiddenAct;
+    QAction *m_listAct, *m_iconsAct, *m_previewAct, *m_hiddenAct;
+    QActionGroup *m_viewModeGroup;
     QAction *m_zoomInAct, *m_zoomOutAct, *m_zoomResetAct;
     QAction *m_newTabAct = nullptr;
     QAction *m_moreAct = nullptr;

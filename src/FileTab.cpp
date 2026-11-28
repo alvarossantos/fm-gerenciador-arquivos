@@ -806,10 +806,11 @@ void FileTab::setShowHidden(bool show)
     m_model->setFilter(f);
 }
 
-void FileTab::setViewActions(QAction *icons, QAction *preview, QAction *hidden,
+void FileTab::setViewActions(QAction *list, QAction *grid, QAction *preview, QAction *hidden,
                              QAction *zoomIn, QAction *zoomOut, QAction *zoomReset)
 {
-    m_iconsAct = icons;
+    m_listAct = list;
+    m_iconsAct = grid;
     m_previewAct = preview;
     m_hiddenAct = hidden;
     m_zoomInAct = zoomIn;
@@ -1025,21 +1026,10 @@ void FileTab::addNewMenu(QMenu *menu)
 
 void FileTab::addViewMenu(QMenu *menu)
 {
-    QAction *details = menu->addAction(tr("Lista detalhada"));
-    QAction *grid = menu->addAction(tr("Grade de ícones"));
-    details->setCheckable(true);
-    grid->setCheckable(true);
-    const bool icons = m_iconsAct && m_iconsAct->isChecked();
-    details->setChecked(!icons);
-    grid->setChecked(icons);
-    connect(details, &QAction::triggered, this, [this] {
-        if (m_iconsAct)
-            m_iconsAct->setChecked(false);
-    });
-    connect(grid, &QAction::triggered, this, [this] {
-        if (m_iconsAct)
-            m_iconsAct->setChecked(true);
-    });
+    if (m_listAct)
+        menu->addAction(m_listAct);
+    if (m_iconsAct)
+        menu->addAction(m_iconsAct);
 
     menu->addSeparator();
     if (m_previewAct)

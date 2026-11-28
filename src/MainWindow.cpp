@@ -2,6 +2,7 @@
 #include "FileTab.h"
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -96,9 +97,18 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     pathContainerLayout->addWidget(m_pathEdit);
     tb->addWidget(m_pathContainer);
 
-    m_iconsAct = tb->addAction(QIcon::fromTheme("view-list-icons"), tr("Visão em ícones"));
+    m_listAct = tb->addAction(QIcon::fromTheme("view-list-details"), tr("Lista detalhada"));
+    m_listAct->setObjectName(QStringLiteral("listViewAction"));
+    m_listAct->setCheckable(true);
+    m_iconsAct = tb->addAction(QIcon::fromTheme("view-list-icons"), tr("Grade de ícones"));
+    m_iconsAct->setObjectName(QStringLiteral("gridViewAction"));
     m_iconsAct->setCheckable(true);
     m_iconsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_1));
+    m_viewModeGroup = new QActionGroup(this);
+    m_viewModeGroup->setExclusive(true);
+    m_viewModeGroup->addAction(m_listAct);
+    m_viewModeGroup->addAction(m_iconsAct);
+    m_listAct->setChecked(true);
     m_previewAct = tb->addAction(QIcon::fromTheme("view-preview"), tr("Painel de pré-visualização (F11)"));
     m_previewAct->setCheckable(true);
     m_previewAct->setShortcut(QKeySequence(Qt::Key_F11));
@@ -134,16 +144,20 @@ MainWindow::MainWindow(const QString &startPath, QWidget *parent) : QMainWindow(
     QAction *customizeAct = interfaceMenu->addAction(tr("Personalizar…"));
     connect(customizeAct, &QAction::triggered, this, &MainWindow::openCustomizeDialog);
 
-    for (QAction *a : {m_back, m_forward, m_up, m_iconsAct, m_previewAct, m_hiddenAct,
+    for (QAction *a : {m_back, m_forward, m_up, m_listAct, m_iconsAct, m_previewAct, m_hiddenAct,
                        m_zoomInAct, m_zoomOutAct, m_zoomResetAct, m_newTabAct})
         addAction(a); // garante que os atalhos funcionem em toda a janela
 
     auto *focusPath = new QAction(this);
+    focusPath->setObjectName(QStringLiteral("focusPathAction"));
+    focusPath->setText(tr("Editar caminho"));
     focusPath->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_L));
     addAction(focusPath);
     connect(focusPath, &QAction::triggered, this, &MainWindow::beginPathEdit);
 
     auto *closeTabAct = new QAction(this);
+    closeTabAct->setObjectName(QStringLiteral("closeTabAction"));
+    closeTabAct->setText(tr("Fechar aba"));
     closeTabAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_W));
     addAction(closeTabAct);
     connect(closeTabAct, &QAction::triggered, this, [this] { closeTab(m_tabs->currentIndex()); });
@@ -225,7 +239,7 @@ FileTab *MainWindow::addTab(const QString &path)
 {
     auto *tab = new FileTab(path);
     tab->applyUiPreferences(m_ui);
-    tab->setViewActions(m_iconsAct, m_previewAct, m_hiddenAct,
+    tab->setViewActions(m_listAct, m_iconsAct, m_previewAct, m_hiddenAct,
                         m_zoomInAct, m_zoomOutAct, m_zoomResetAct);
     tab->setIconMode(m_iconsAct->isChecked());
     tab->setZoom(currentTab() ? currentTab()->zoom() : 100);
