@@ -84,7 +84,7 @@ void MainWindowTest::shortcutActionsHaveReadableLabels()
 }
 ```
 
-Além disso, ajuste `viewMenuSharesToolbarStateAcrossTabs` para localizar `listViewAction`/`gridViewAction` no menu de contexto e confirmar que são as mesmas instâncias da janela.
+Inclua `viewModeSwitchesBothWaysFromToolbarAndContextMenu`: em `Grade → Lista → Grade`, alterne primeiro pela toolbar (`gridViewAction`/`listViewAction`) e depois pelo menu de contexto (`findChild<QMenu*>` da aba, ações `Lista detalhada`/`Grade de ícones`). A cada passo confirme **marcação** (`gridViewAction->isChecked()`) e **visualização efetiva** (`QStackedWidget::currentWidget()` é `QListView`/`QTreeView`). Ajuste também `viewMenuSharesToolbarStateAcrossTabs` para usar as mesmas instâncias da janela.
 
 - [ ] **Step 2: Rodar e confirmar falha**
 
@@ -93,7 +93,7 @@ Expected: FAIL — `focusPathAction` e `listViewAction` não existem.
 
 - [ ] **Step 3: Implementar**
 
-Em `MainWindow`, crie `m_listAct`, atribua os `objectName`s, coloque as duas ações num `QActionGroup` exclusivo e conecte `m_listAct::toggled` a `m_iconsAct->setChecked(!on)` com `QSignalBlocker` no caminho inverso. Atualize `addTab()` e todas as chamadas de `setViewActions`. Em `FileTab::addViewMenu()`, use as ações injetadas em vez das locais, mantendo a ordem `Lista detalhada`, `Grade de ícones`, separador, prévia, ocultos, separador, zoom.
+Em `MainWindow`, crie `m_listAct`, atribua os `objectName`s e coloque as duas ações num `QActionGroup` exclusivo. **Concentre a mudança de visualização no `toggled` de `m_iconsAct`**: marcar `m_listAct` desmarca `m_iconsAct` pelo próprio grupo, que emite `toggled(false)` e troca para lista; marcar `m_iconsAct` emite `toggled(true)` e troca para grade. Não crie conexão inversa nem transição extra. Atualize `addTab()` e todas as chamadas de `setViewActions`. Em `FileTab::addViewMenu()`, use as ações injetadas em vez das locais, mantendo a ordem `Lista detalhada`, `Grade de ícones`, separador, prévia, ocultos, separador, zoom.
 
 - [ ] **Step 4: Rodar e confirmar passagem**
 
@@ -144,7 +144,8 @@ void MainWindowTest::keyboardOpensMenusAt320InEveryPreset()
 void MainWindowTest::tabsMenuUsesFullPathForDuplicates()
 {
     // Crie duas pastas com o mesmo nome sob pais diferentes; abra uma aba em cada.
-    // Selecione um arquivo na aba 1 e navegue para uma subpasta (histórico).
+    // Na aba 1, navegue para uma subpasta e volte (histórico criado) e só então
+    // selecione um arquivo na pasta atual, antes de trocar de aba.
     // Abra showAllTabsMenu e confirme: 2 ações, ordem da faixa, textos com caminho
     // completo, exatamente uma checada (a ativa).
     // Com o menu aberto: setas Down/Up percorrem as ações, Enter ativa a escolhida
@@ -206,13 +207,18 @@ git commit -m "feat: menus Arquivos e Visualização com suspenso de abas"
 ```cpp
 void FileTabTest::sortSurvivesRefreshInBothViews()
 {
-    // Crie arquivos com tamanhos/datas distintas.
+    // Crie a.txt, b.txt, c.txt na pasta.
     FileTab tab(dir.path());
-    tab.setSort(3, Qt::DescendingOrder);
-    // Leia a ordem real via findChild<QTreeView*> e findChild<QListView*>:
-    //   o nome em m_proxy->index(row, 0).data() deve ser o mesmo nas duas visões.
-    // Trigger refreshAction (objectName) e repita a leitura: ordem idêntica.
-    // QSignalSpy em sortChanged recebe (3, DescendingOrder).
+    const QStringList asc { "a.txt", "b.txt", "c.txt" };
+    const QStringList desc { "c.txt", "b.txt", "a.txt" };
+
+    tab.setSort(0, Qt::AscendingOrder);
+    // Leia a sequência real em QTreeView E, separadamente, em QListView:
+    //   cada uma deve ser exatamente asc — não compare uma com a outra.
+    tab.setSort(0, Qt::DescendingOrder);
+    // Repita: cada visão deve ser exatamente desc.
+    // Trigger refreshAction (objectName) e repita: cada visão continua desc.
+    // QSignalSpy em sortChanged recebe (0, AscendingOrder) e (0, DescendingOrder).
 }
 ```
 
@@ -252,14 +258,20 @@ git commit -m "feat: ordenação explícita por aba com reaplicação após atua
 ```cpp
 void MainWindowTest::sortIsPerTabAndSurvivesRefresh()
 {
-    // Abra duas abas em pastas com nomes ordenáveis de forma distinta.
-    // Escolha sortNameDesc na aba 1 e sortDateNewest/ sortSizeDesc na aba 2.
-    // Para cada aba: alterne Lista/Grade com listViewAction/gridViewAction e
-    //   compare a sequência real de nomes nas duas visões;
-    //   trigger refreshAction e compare de novo;
-    //   ao voltar para a aba, confirme que só a ação daquela ordem está checada.
-    // Clique no cabeçalho da coluna 2 na aba 1 e confirme que sortTypeAsc (ou
-    //   a direção correspondente ao clique) passa a ser a marcação ativa.
+    // Aba 1: a1.txt, b1.txt, c1.txt. Aba 2: a2.txt, b2.txt, c2.txt.
+    const QStringList aba1Desc { "c1.txt", "b1.txt", "a1.txt" };
+    const QStringList aba2Asc  { "a2.txt", "b2.txt", "c2.txt" };
+
+    // Escolha sortNameDesc na aba 1 e sortNameAsc na aba 2.
+    // Para CADA aba e CADA visão (QTreeView e QListView separadamente), compare
+    // a sequência real com a lista literal correspondente — nunca compare uma
+    // visão com a outra.
+    // Alterne Lista/Grade com listViewAction/gridViewAction, trigger refreshAction
+    // e repita a comparação literal. Volte para cada aba e confirme que só a
+    // ação daquela ordem está checada.
+    // Clique no cabeçalho da coluna 0 na aba 1 (invertendo para asc) e confirme
+    // que sortNameAsc passa a ser a marcação ativa e a sequência vira
+    // { "a1.txt", "b1.txt", "c1.txt" } nas duas visões.
 }
 ```
 
@@ -313,7 +325,7 @@ void UiPreferencesTest::normalizeColumnsSanitizes()
 }
 ```
 
-Em `tests/mainwindow_test.cpp`, reescreva `customizeDialogPersistsManualAdjustments`: marque `customColumn0`+`customColumn3`, aceite, confirme `ui/columns == {"0","3"}`, reabra o diálogo e veja `customColumn3` checado e `customColumn1`/`customColumn2` limpos, reinicie `MainWindow` e confirme três colunas visíveis na `QTreeView`.
+Em `tests/mainwindow_test.cpp`, reescreva `customizeDialogPersistsManualAdjustments`: marque `customColumn0`+`customColumn3`, aceite, confirme `ui/columns == {"0","3"}`, reabra o diálogo e veja `customColumn3` checado e `customColumn1`/`customColumn2` limpos. Após reiniciar `MainWindow`, confirme **duas** colunas visíveis na `QTreeView` (índices `0` e `3`) e que as colunas `1` (`Tamanho`) e `2` (`Tipo`) continuam ocultas.
 
 - [ ] **Step 2: Rodar e confirmar falha**
 
@@ -405,10 +417,22 @@ git commit -m "feat: legendas de tamanho e data na grade"
 ```cpp
 void MainWindowTest::paletteChangeKeepsMenusAndFocusReadable()
 {
-    // Abra ambos os menus, marque uma ação de ordenação e uma legenda.
-    // Troque o theme file e chame ThemeManager::setThemeFile().
+    // Abra um dos menus, marque uma ação de ordenação e uma legenda.
     // Confirme: marcas inalteradas, ações habilitadas, botões com hasFocus()
-    // após Tab, e nenhuma ação com texto vazio nos dois menus.
+    // após Tab e nenhuma ação com texto vazio nos dois menus.
+    // Se passar de primeira, registre como cobertura de regressão — não é o
+    // teste de recarga em runtime.
+}
+
+void MainWindowTest::liveThemeReloadKeepsOpenMenuState()
+{
+    // Escreva palette-A.json no caminho observado e chame setThemeFile() uma
+    // única vez para iniciar o watch. Abra viewMenu e deixe aberto.
+    // Sobrescreva palette-B.json NO MESMO CAMINHO, sem chamar setThemeFile()
+    // novamente. QFileSystemWatcher + debounce de 150 ms deve recarregar.
+    // QTRY_VERIFY_WITH_TIMEOUT: qApp->palette().color(QPalette::Window) mudou
+    // de A para B; marcas de ordenação/legenda continuam as mesmas; o menu
+    // continua visível; Tab ainda alcança viewMenuButton com foco visível.
 }
 ```
 
@@ -419,7 +443,7 @@ Expected: FAIL — caso ainda não implementado/registrado.
 
 - [ ] **Step 3: Implementar o necessário e validar tudo**
 
-Ajuste apenas o que o teste revelar (estados devem vir das `QAction`s, não de stylesheet manual). Rode o suite completo nos dois builds e o benchmark Release com o protocolo dos Global Constraints.
+Ajuste apenas o que o teste revelar (estados devem vir das `QAction`s, não de stylesheet manual). Para a recarga ao vivo, dependa apenas do `QFileSystemWatcher`/debounce já existente em `ThemeManager`: **não chame `setThemeFile()` na segunda escrita**. Rode o suite completo nos dois builds e o benchmark Release com o protocolo dos Global Constraints.
 
 Run:
 ```bash
