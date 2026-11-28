@@ -29,18 +29,23 @@ Protocolo do plano: 7 rodadas, primeira descartada, mediana das 6 restantes.
 ```bash
 for i in $(seq 1 7); do
   T=$(mktemp -d /tmp/opencode/fm-bench-XXXXXX)
+  mkdir -p "$T/bench"
   XDG_CONFIG_HOME="$T" QT_QPA_PLATFORM=offscreen timeout 10 \
     ./build-release/fm --bench "$T/bench" 2>&1 | grep -o '[0-9]\+ ms'
   rm -rf "$T"
-done | tee /tmp/opencode/fm-i18-bench-final3.txt
-tail -6 /tmp/opencode/fm-i18-bench-final3.txt | sed 's/ ms//' | sort -n \
+done | tee /tmp/opencode/fm-i18-bench-final2.txt
+tail -6 /tmp/opencode/fm-i18-bench-final2.txt | sed 's/ ms//' | sort -n \
   | awk '{a[NR]=$1} END{printf "mediana: %.1f ms\n", (a[3]+a[4])/2}'
 ```
 
-Rodadas: `142, 157, 162, 138, 135, 146, 144 ms` → **mediana final: 141,0 ms**.
-Baseline registrado no plano: **92,0 ms**. Rodadas intermediárias desta sessão: `136,5 ms` e `145,0 ms`.
+Rodadas registradas: `142, 157, 162, 138, 135, 146, 144 ms`. Descartando a primeira (`142 ms`), a mediana das seis restantes (`135, 138, 144, 146, 157, 162`) é **145,0 ms**. Baseline do plano: **92,0 ms**.
 
-Para separar custo real de ruído do ambiente, baseline e HEAD foram medidos alternadamente na mesma carga (7 pares, primeira rodada descartada): baseline `b65fd92` = **138,0 ms**, HEAD `32b7938` = **140,0 ms**. O diff pareado é ~2 ms; os valores absolutos estão inflados pela carga da máquina (`load average` ~3,8). A diferença contra 92,0 ms não deve ser lida como regressão de ~49 ms sem esse contexto. Binários Release de baseline e HEAD têm o mesmo `-O3 -DNDEBUG -flto=auto`.
+Comparação pareada anterior, sem criar a pasta inicial: baseline `b65fd92` = **138,0 ms**, HEAD `32b7938` = **140,0 ms** — diferença de **2 ms** entre as medianas registradas. Para evitar Dependência de pasta inexistente, a comparação foi refeita com `mkdir -p "$T/bench"` e a mesma pasta existente passada aos dois binários, em 7 pares alternados com o primeiro par descartado. Última execução, já com as correções deste review:
+
+- baseline: `95, 93, 91, 94, 88, 86, 86 ms` → mediana das seis últimas: **89,5 ms**
+- HEAD: `94, 90, 91, 92, 90, 87, 85 ms` → mediana das seis últimas: **90,0 ms**
+
+A diferença de 2 ms não se reproduziu nas execuções com a pasta criada (diferenças de 0,0 ms e 0,5 ms); por isso ela fica registrada como histórico da medição anterior, não como conclusão de custo. Os binários Release de baseline e HEAD usam o mesmo `-O3 -DNDEBUG -flto=auto`.
 
 ## Validação visual
 
