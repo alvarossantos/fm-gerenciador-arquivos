@@ -5,6 +5,7 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDialog>
@@ -22,6 +23,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPalette>
 #include <QPoint>
 #include <QScopeGuard>
 #include <QSettings>
@@ -39,6 +41,7 @@
 
 #include "FileTab.h"
 #include "MainWindow.h"
+#include "ThemeManager.h"
 #include "UiPreferences.h"
 
 namespace {
@@ -224,6 +227,52 @@ QListWidgetItem *findPlace(QListWidget *places, const QString &label)
     return items.isEmpty() ? nullptr : items.first();
 }
 
+bool writePaletteFile(const QString &path, const QString &surface, const QString &primary)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QByteArray json = QStringLiteral(
+                                "{\"surface\":\"%1\",\"onSurface\":\"#f2f2f2\","
+                                "\"primary\":\"%2\",\"onPrimary\":\"#ffffff\","
+                                "\"primaryContainer\":\"#333344\"}")
+                                .arg(surface, primary)
+                                .toUtf8();
+    return f.write(json) == json.size();
+}
+
+bool menuHasNoEmptyActionText(QMenu *menu)
+{
+    if (!menu)
+        return false;
+    for (QAction *a : menu->actions())
+        if (!a->isSeparator() && a->text().trimmed().isEmpty())
+            return false;
+    return true;
+}
+
+bool menuActionsAreEnabled(QMenu *menu)
+{
+    if (!menu)
+        return false;
+    for (QAction *a : menu->actions())
+        if (!a->isSeparator() && !a->isEnabled())
+            return false;
+    return true;
+}
+
+bool tabReachesButton(QWidget *window, QToolButton *button,
+                      Qt::KeyboardModifier modifier = Qt::NoModifier)
+{
+    for (int i = 0; i < 16; ++i) {
+        if (button->hasFocus())
+            return true;
+        QWidget *focus = QApplication::focusWidget();
+        QTest::keyClick(focus ? focus : window, Qt::Key_Tab, modifier);
+    }
+    return button->hasFocus();
+}
+
 } // namespace
 
 class MainWindowTest : public QObject
@@ -262,6 +311,8 @@ private slots:
     void tabsMenuUsesFullPathForDuplicates();
     void localDialogsHaveReadableText();
     void sortIsPerTabAndSurvivesRefresh();
+    void paletteChangeKeepsMenusAndFocusReadable();
+    void liveThemeReloadKeepsOpenMenuState();
 };
 
 void MainWindowTest::shortcutActionsHaveReadableLabels()
@@ -1953,6 +2004,153 @@ void MainWindowTest::sortIsPerTabAndSurvivesRefresh()
     QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1Base, 3000);
     checkBothViews(tree1, icons1, aba1Base);
     checkBothViews(tree2, icons2, aba2Base);
+}
+
+void MainWindowTest::paletteChangeKeepsMenusAndFocusReadable()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    const QString nested = QDir(home).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(nested));
+    const QString palettePath = QDir(root.path()).filePath(QStringLiteral("palette.json"));
+    QVERIFY(writePaletteFile(palettePath, QStringLiteral("#112233"),
+                             QStringLiteral("#445566")));
+
+    const QPalette originalPalette = qApp->palette();
+    const QString originalStyle = qApp->styleSheet();
+    const auto restore = qScopeGuard([&originalPalette, &originalStyle] {
+        qApp->setPalette(originalPalette);
+        qApp->setStyleSheet(originalStyle);
+    });
+
+    ThemeManager theme;
+    theme.setThemeFile(palettePath); // troca explícita: cobertura de regressão
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+
+    MainWindow w(home);
+    w.resize(320, 600);
+    w.show();
+    QApplication::processEvents();
+
+    auto *tab = w.findChild<FileTab *>();
+    QVERIFY(tab && tab->goTo(nested) && tab->goTo(home));
+    tab->back(); // habilita Voltar/Avançar, como na cadeia de foco existente
+    QVERIFY(tab->canGoBack() && tab->canGoForward());
+    auto *filesButton = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
+    auto *viewButton = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
+    auto *filesMenu = w.findChild<QMenu *>(QStringLiteral("filesMenu"));
+    auto *viewMenu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    auto *sort = w.findChild<QAction *>(QStringLiteral("sortSizeDesc"));
+    auto *legend = w.findChild<QAction *>(QStringLiteral("gridSizeAction"));
+    QVERIFY(filesButton && viewButton && filesMenu && viewMenu && sort && legend);
+
+    viewButton->setFocus();
+    viewMenu->popup(viewButton->mapToGlobal(QPoint(0, viewButton->height())));
+    QVERIFY(viewMenu->isVisible());
+    QVERIFY(menuHasNoEmptyActionText(filesMenu));
+    QVERIFY(menuHasNoEmptyActionText(viewMenu));
+    QVERIFY(menuActionsAreEnabled(filesMenu));
+    QVERIFY(menuActionsAreEnabled(viewMenu));
+
+    sort->trigger();
+    legend->trigger();
+    QVERIFY(sort->isChecked() && legend->isChecked());
+    QVERIFY(viewMenu->isVisible());
+
+    // Troca de tema com setThemeFile(): não é a recarga ao vivo.
+    QVERIFY(writePaletteFile(palettePath, QStringLiteral("#abcdef"),
+                             QStringLiteral("#778899")));
+    theme.setThemeFile(palettePath);
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#abcdef")));
+
+    QVERIFY(sort->isChecked() && legend->isChecked());
+    QVERIFY(menuHasNoEmptyActionText(filesMenu));
+    QVERIFY(menuHasNoEmptyActionText(viewMenu));
+    QVERIFY(menuActionsAreEnabled(filesMenu));
+    QVERIFY(menuActionsAreEnabled(viewMenu));
+    QVERIFY(viewMenu->isVisible());
+
+    QWidget *popup = qApp->activePopupWidget();
+    QTest::keyClick(popup ? popup : static_cast<QWidget *>(&w), Qt::Key_Escape);
+    closePopups();
+    filesButton->setFocus();
+    QVERIFY2(tabReachesButton(&w, viewButton), "Tab não alcançou Visualização após trocar paleta");
+    QVERIFY(viewButton->hasFocus());
+    QVERIFY(viewButton->isVisible() && (viewButton->focusPolicy() & Qt::TabFocus));
+    QVERIFY2(tabReachesButton(&w, filesButton, Qt::ShiftModifier),
+             "Shift+Tab não alcançou Arquivos após trocar paleta");
+    QVERIFY(filesButton->hasFocus());
+    QVERIFY(filesButton->isVisible() && (filesButton->focusPolicy() & Qt::TabFocus));
+}
+
+void MainWindowTest::liveThemeReloadKeepsOpenMenuState()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    const QString nested = QDir(home).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(nested));
+    const QString palettePath = QDir(root.path()).filePath(QStringLiteral("palette.json"));
+    // palette-A.json: escrito no caminho que o ThemeManager passa a observar.
+    QVERIFY(writePaletteFile(palettePath, QStringLiteral("#112233"),
+                             QStringLiteral("#445566")));
+
+    const QPalette originalPalette = qApp->palette();
+    const QString originalStyle = qApp->styleSheet();
+    const auto restore = qScopeGuard([&originalPalette, &originalStyle] {
+        qApp->setPalette(originalPalette);
+        qApp->setStyleSheet(originalStyle);
+    });
+
+    ThemeManager theme;
+    theme.setThemeFile(palettePath); // uma única vez: inicia o watcher
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+
+    MainWindow w(home);
+    w.resize(320, 600);
+    w.show();
+    QApplication::processEvents();
+    auto *tab = w.findChild<FileTab *>();
+    QVERIFY(tab && tab->goTo(nested) && tab->goTo(home));
+    tab->back();
+    QVERIFY(tab->canGoBack() && tab->canGoForward());
+
+    auto *filesButton = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
+    auto *viewButton = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
+    auto *viewMenu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    auto *sort = w.findChild<QAction *>(QStringLiteral("sortDateNewest"));
+    auto *legend = w.findChild<QAction *>(QStringLiteral("gridDateAction"));
+    QVERIFY(filesButton && viewButton && viewMenu && sort && legend);
+
+    sort->trigger();
+    legend->trigger();
+    QVERIFY(sort->isChecked() && legend->isChecked());
+    viewButton->setFocus();
+    viewMenu->popup(viewButton->mapToGlobal(QPoint(0, viewButton->height())));
+    QVERIFY(viewMenu->isVisible());
+
+    // palette-B.json: mesmo caminho, sem segundo setThemeFile().
+    QVERIFY(writePaletteFile(palettePath, QStringLiteral("#abcdef"),
+                             QStringLiteral("#778899")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qApp->palette().color(QPalette::Window) == QColor(QStringLiteral("#abcdef")), 3000);
+    QVERIFY(sort->isChecked() && legend->isChecked());
+    QVERIFY(menuHasNoEmptyActionText(viewMenu));
+    QVERIFY(menuActionsAreEnabled(viewMenu));
+    QVERIFY(viewMenu->isVisible());
+
+    // O popup tem o teclado enquanto está aberto; a cadeia de foco é conferida
+    // depois de fechá-lo, com o menu ainda aberto tendo sobrevivido ao reload.
+    QWidget *popup = qApp->activePopupWidget();
+    QTest::keyClick(popup ? popup : static_cast<QWidget *>(&w), Qt::Key_Escape);
+    closePopups();
+    filesButton->setFocus();
+    QVERIFY2(tabReachesButton(&w, viewButton), "Tab não alcançou Visualização após reload ao vivo");
+    QVERIFY(viewButton->hasFocus());
+    QVERIFY(viewButton->isVisible() && (viewButton->focusPolicy() & Qt::TabFocus));
 }
 
 QTEST_MAIN(MainWindowTest)
