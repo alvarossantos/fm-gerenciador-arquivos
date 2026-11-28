@@ -14,6 +14,7 @@ private slots:
     void defaultsMatchMockups();
     void missingKeyUsesSelectedPreset();
     void invalidValuesFallBackToPreset();
+    void normalizeColumnsSanitizes();
     void roundTrip();
 };
 
@@ -82,7 +83,22 @@ void UiPreferencesTest::invalidValuesFallBackToPreset()
 
     const UiPreferences loaded = loadUiPreferences(settings);
     QCOMPARE(loaded.density, 1);
-    QCOMPARE(loaded.columns, defaultUiPreferences(UiPreset::Balanced).columns);
+    QCOMPARE(loaded.columns, QStringList{QStringLiteral("0")});
+}
+
+void UiPreferencesTest::normalizeColumnsSanitizes()
+{
+    const QStringList onlyName{QStringLiteral("0")};
+    const QStringList nameSizeType{QStringLiteral("0"), QStringLiteral("1"),
+                                   QStringLiteral("2")};
+
+    QCOMPARE(normalizeColumns({QStringLiteral("0"), QStringLiteral("0"), QStringLiteral("9")},
+                              UiPreset::Balanced),
+             onlyName);
+    QCOMPARE(normalizeColumns({QStringLiteral("1"), QStringLiteral("2")}, UiPreset::Balanced),
+             nameSizeType);
+    QCOMPARE(normalizeColumns({}, UiPreset::Compact),
+             defaultUiPreferences(UiPreset::Compact).columns);
 }
 
 void UiPreferencesTest::roundTrip()

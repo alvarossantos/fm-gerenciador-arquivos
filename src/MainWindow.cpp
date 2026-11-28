@@ -594,13 +594,21 @@ void MainWindow::openCustomizeDialog()
     density->setCurrentIndex(m_ui.density);
     form->addRow(tr("Densidade da lista"), density);
 
-    auto *columns = new QComboBox(dialog);
-    columns->setObjectName(QStringLiteral("customColumns"));
+    auto *columnsLayout = new QHBoxLayout;
     const QStringList names { tr("Nome"), tr("Tamanho"), tr("Tipo"), tr("Modificação") };
-    for (int count = 1; count <= names.size(); ++count)
-        columns->addItem(names.mid(0, count).join(QStringLiteral(", ")));
-    columns->setCurrentIndex(qBound(0, m_ui.columns.size() - 1, names.size() - 1));
-    form->addRow(tr("Colunas visíveis"), columns);
+    QList<QCheckBox *> columns;
+    for (int i = 0; i < names.size(); ++i) {
+        auto *check = new QCheckBox(names.at(i), dialog);
+        check->setObjectName(QStringLiteral("customColumn%1").arg(i));
+        check->setChecked(m_ui.columns.contains(QString::number(i)));
+        if (i == 0) {
+            check->setEnabled(false);
+            check->setChecked(true);
+        }
+        columnsLayout->addWidget(check);
+        columns.append(check);
+    }
+    form->addRow(tr("Colunas visíveis"), columnsLayout);
 
     auto *iconSize = new QComboBox(dialog);
     iconSize->setObjectName(QStringLiteral("customIconSize"));
@@ -623,9 +631,10 @@ void MainWindow::openCustomizeDialog()
         static const int sizes[] = { 32, 48, 64 };
         prefs.iconSize = sizes[qBound(0, iconSize->currentIndex(), 2)];
         QStringList selected;
-        for (int i = 0; i <= columns->currentIndex(); ++i)
-            selected << QString::number(i);
-        prefs.columns = selected;
+        for (int i = 0; i < columns.size(); ++i)
+            if (columns.at(i)->isChecked())
+                selected << QString::number(i);
+        prefs.columns = normalizeColumns(selected, prefs.preset);
         prefs.preview = preview->isChecked();
         applyUiPreferences(prefs);
         dialog->accept();

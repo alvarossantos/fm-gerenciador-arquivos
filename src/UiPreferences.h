@@ -14,6 +14,7 @@ struct UiPreferences {
 };
 
 UiPreferences defaultUiPreferences(UiPreset preset);
+QStringList normalizeColumns(const QStringList &input, UiPreset preset);
 UiPreferences loadUiPreferences(QSettings &settings);
 void saveUiPreferences(QSettings &settings, const UiPreferences &prefs);
 QString uiPresetKey(UiPreset preset);

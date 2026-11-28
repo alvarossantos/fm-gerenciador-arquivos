@@ -1306,14 +1306,11 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
     QVERIFY(root.isValid());
     const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
     QVERIFY(QDir().mkpath(home));
+    const QStringList selectedColumns{QStringLiteral("0"), QStringLiteral("3")};
 
-    {
-        MainWindow w(home);
-        w.show();
-        QApplication::processEvents();
-        QVERIFY(choosePreset(&w, QStringLiteral("Avançada")));
-        auto *places = w.findChild<QListWidget *>(QStringLiteral("places"));
-        QVERIFY(places);
+    const auto openCustomize = [](MainWindow *window) {
+        auto *places = window->findChild<QListWidget *>(QStringLiteral("places"));
+        QVERIFY2(places, "lista lateral ausente");
         QListWidgetItem *entry = findPlace(places, QStringLiteral("Personalizar…"));
         QVERIFY2(entry && !entry->isHidden(), "Personalizar…” ausente na lateral");
         places->scrollToItem(entry);
@@ -1321,17 +1318,32 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
         QTest::mouseClick(places->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
                           places->visualItemRect(entry).center());
         QApplication::processEvents();
+    };
+
+    {
+        MainWindow w(home);
+        w.show();
+        QApplication::processEvents();
+        QVERIFY(choosePreset(&w, QStringLiteral("Avançada")));
+        openCustomize(&w);
 
         auto *dialog = w.findChild<QDialog *>(QStringLiteral("customizeDialog"));
         QVERIFY2(dialog, "Personalizar… da lateral não abriu o painel");
         auto *density = dialog->findChild<QComboBox *>(QStringLiteral("customDensity"));
-        auto *columns = dialog->findChild<QComboBox *>(QStringLiteral("customColumns"));
+        auto *column0 = dialog->findChild<QCheckBox *>(QStringLiteral("customColumn0"));
+        auto *column1 = dialog->findChild<QCheckBox *>(QStringLiteral("customColumn1"));
+        auto *column2 = dialog->findChild<QCheckBox *>(QStringLiteral("customColumn2"));
+        auto *column3 = dialog->findChild<QCheckBox *>(QStringLiteral("customColumn3"));
         auto *iconSize = dialog->findChild<QComboBox *>(QStringLiteral("customIconSize"));
         auto *preview = dialog->findChild<QCheckBox *>(QStringLiteral("customPreview"));
         auto *buttons = dialog->findChild<QDialogButtonBox *>();
-        QVERIFY(density && columns && iconSize && preview && buttons);
+        QVERIFY(density && column0 && column1 && column2 && column3 && iconSize && preview
+                && buttons);
+        QVERIFY(column0->isChecked());
+        QVERIFY(!column0->isEnabled());
+        column1->setChecked(false);
+        column2->setChecked(false);
         density->setCurrentIndex(0);
-        columns->setCurrentIndex(2);
         iconSize->setCurrentIndex(0);
         preview->setChecked(true);
         QPushButton *ok = buttons->button(QDialogButtonBox::Ok);
@@ -1343,14 +1355,34 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
         QCOMPARE(prefs.preset, UiPreset::Advanced);
         QCOMPARE(prefs.density, 0);
         QCOMPARE(prefs.iconSize, 32);
-        QCOMPARE(prefs.columns.size(), 3);
+        QCOMPARE(prefs.columns, selectedColumns);
         QVERIFY(prefs.preview);
 
         QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
         QCOMPARE(settings.value(QStringLiteral("ui/density")).toInt(), 0);
         QCOMPARE(settings.value(QStringLiteral("ui/iconSize")).toInt(), 32);
-        QCOMPARE(settings.value(QStringLiteral("ui/columns")).toStringList().size(), 3);
+        QCOMPARE(settings.value(QStringLiteral("ui/columns")).toStringList(), selectedColumns);
         QVERIFY(settings.value(QStringLiteral("ui/preview")).toBool());
+
+        openCustomize(&w);
+        auto *reopened = w.findChild<QDialog *>(QStringLiteral("customizeDialog"));
+        QVERIFY2(reopened, "diálogo não reabriu após aceitar");
+        auto *reopened0 = reopened->findChild<QCheckBox *>(QStringLiteral("customColumn0"));
+        auto *reopened1 = reopened->findChild<QCheckBox *>(QStringLiteral("customColumn1"));
+        auto *reopened2 = reopened->findChild<QCheckBox *>(QStringLiteral("customColumn2"));
+        auto *reopened3 = reopened->findChild<QCheckBox *>(QStringLiteral("customColumn3"));
+        QVERIFY(reopened0 && reopened1 && reopened2 && reopened3);
+        QVERIFY(reopened0->isChecked());
+        QVERIFY(!reopened0->isEnabled());
+        QVERIFY(reopened3->isChecked());
+        QVERIFY(!reopened1->isChecked());
+        QVERIFY(!reopened2->isChecked());
+        auto *reopenedButtons = reopened->findChild<QDialogButtonBox *>();
+        QVERIFY(reopenedButtons);
+        QPushButton *cancel = reopenedButtons->button(QDialogButtonBox::Cancel);
+        QVERIFY(cancel);
+        cancel->click();
+        QApplication::processEvents();
         w.close();
     }
 
@@ -1358,11 +1390,26 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
     UiPreferences expected = defaultUiPreferences(UiPreset::Advanced);
     expected.density = 0;
     expected.iconSize = 32;
-    expected.columns = QStringList{QStringLiteral("0"), QStringLiteral("1"),
-                                   QStringLiteral("2")};
+    expected.columns = selectedColumns;
     expected.preview = true;
     QVERIFY2(samePreferences(restarted.uiPreferences(), expected),
              "ajustes manuais não sobreviveram ao reinício");
+
+    auto *tree = restarted.findChild<QTreeView *>();
+    QVERIFY2(tree, "QTreeView ausente após reinício");
+    QHeaderView *header = tree->header();
+    QVERIFY(header);
+    QVector<int> visibleColumns;
+    for (int col = 0; col < 4; ++col)
+        if (!header->isSectionHidden(col))
+            visibleColumns.append(col);
+    QCOMPARE(visibleColumns.size(), 2);
+    QCOMPARE(visibleColumns.value(0), 0);
+    QCOMPARE(visibleColumns.value(1), 3);
+    QVERIFY(!header->isSectionHidden(0));
+    QVERIFY(header->isSectionHidden(1));
+    QVERIFY(header->isSectionHidden(2));
+    QVERIFY(!header->isSectionHidden(3));
 }
 
 void MainWindowTest::keyboardOpensMenusAt320InEveryPreset()

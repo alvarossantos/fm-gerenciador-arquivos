@@ -67,6 +67,29 @@ UiPreferences defaultUiPreferences(UiPreset preset)
     return prefs;
 }
 
+QStringList normalizeColumns(const QStringList &input, UiPreset preset)
+{
+    QList<int> indices;
+    for (const QString &column : input) {
+        if (!validColumn(column))
+            continue;
+        const int index = column.toInt();
+        if (!indices.contains(index))
+            indices.append(index);
+    }
+    if (indices.isEmpty())
+        return defaultUiPreferences(preset).columns;
+
+    std::sort(indices.begin(), indices.end());
+    if (!indices.contains(0))
+        indices.prepend(0);
+
+    QStringList result;
+    for (int index : indices)
+        result << QString::number(index);
+    return result;
+}
+
 UiPreferences loadUiPreferences(QSettings &settings)
 {
     const UiPreset preset = presetFromKey(
@@ -84,8 +107,7 @@ UiPreferences loadUiPreferences(QSettings &settings)
 
     const QStringList columns =
         settings.value(QLatin1String("ui/columns"), prefs.columns).toStringList();
-    if (!columns.isEmpty() && std::all_of(columns.cbegin(), columns.cend(), validColumn))
-        prefs.columns = columns;
+    prefs.columns = normalizeColumns(columns, preset);
 
     if (settings.contains(QLatin1String("ui/preview")))
         prefs.preview = settings.value(QLatin1String("ui/preview")).toBool();
