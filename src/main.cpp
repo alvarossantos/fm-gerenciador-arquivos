@@ -5,6 +5,7 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QProcess>
 #include <QSettings>
 #include <QStyleFactory>
 
@@ -47,6 +48,10 @@ int main(int argc, char *argv[])
 
     const QStringList args = parser.positionalArguments();
     MainWindow w(args.isEmpty() ? QDir::homePath() : args.first());
+    w.setThemeFile(themeFile);
+    QObject::connect(&w, &MainWindow::newWindowRequested, &w, [](const QStringList &args) {
+        QProcess::startDetached(QCoreApplication::applicationFilePath(), args);
+    });
     w.setBenchMode(parser.isSet(benchOpt));
     QObject::connect(&w, &MainWindow::firstPaint, &w, [&elapsed] {
         std::fprintf(stderr, "tempo até a primeira pintura: %lld ms\n",

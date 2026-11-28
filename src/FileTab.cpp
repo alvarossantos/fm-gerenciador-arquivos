@@ -13,6 +13,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFileSystemModel>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QImageReader>
@@ -25,15 +26,19 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMimeDatabase>
+#include <QPainter>
+#include <QPalette>
 #include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QProgressDialog>
 #include <QShortcut>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStyledItemDelegate>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QTemporaryDir>
 #include <QTreeView>
 #include <QUrl>
@@ -89,6 +94,72 @@ public:
 
 private:
     int m_height;
+};
+
+// Delegate da grade: desenha o nome e acrescenta uma linha por
+// legenda ativa (tamanho e/ou data de modificação). A célula reserva a mesma
+// altura extra no sizeHint, para que as linhas nunca fiquem cortadas.
+class GridLegendDelegate : public QStyledItemDelegate
+{
+public:
+    explicit GridLegendDelegate(QObject *parent = nullptr)
+        : QStyledItemDelegate(parent) {}
+
+    void setLegends(bool size, bool date)
+    {
+        m_size = size;
+        m_date = date;
+    }
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        const int lines = legendLines();
+        QStyleOptionViewItem opt = option;
+        if (lines > 0)
+            opt.rect.adjust(0, 0, 0, -lines * QFontMetrics(opt.font).height());
+        QStyledItemDelegate::paint(painter, opt, index);
+        if (lines == 0)
+            return;
+
+        painter->save();
+        QRect legendRect = option.rect;
+        legendRect.setTop(legendRect.bottom() + 1 - lines * QFontMetrics(option.font).height());
+        if (option.state & QStyle::State_Selected)
+            painter->fillRect(legendRect, option.palette.color(QPalette::Highlight));
+        painter->setFont(option.font);
+        painter->setPen(option.palette.color(option.state & QStyle::State_Selected
+                                                 ? QPalette::HighlightedText : QPalette::Text));
+        if (m_size) {
+            drawLine(painter, legendRect, index.siblingAtColumn(1).data(Qt::DisplayRole).toString());
+            legendRect.translate(0, QFontMetrics(option.font).height());
+        }
+        if (m_date)
+            drawLine(painter, legendRect, index.siblingAtColumn(3).data(Qt::DisplayRole).toString());
+        painter->restore();
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const override
+    {
+        QSize hint = QStyledItemDelegate::sizeHint(option, index);
+        if (const int lines = legendLines())
+            hint.setHeight(hint.height() + lines * QFontMetrics(option.font).height());
+        return hint;
+    }
+
+private:
+    int legendLines() const { return (m_size ? 1 : 0) + (m_date ? 1 : 0); }
+
+    static void drawLine(QPainter *painter, const QRect &rect, const QString &text)
+    {
+        if (text.isEmpty() || rect.isEmpty())
+            return;
+        const QString elided = painter->fontMetrics().elidedText(text, Qt::ElideRight, rect.width());
+        painter->drawText(rect, Qt::AlignHCenter | Qt::AlignTop | Qt::TextSingleLine, elided);
+    }
+
+    bool m_size = false;
+    bool m_date = false;
 };
 
 namespace {
@@ -368,7 +439,8 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_tree->setRootIsDecorated(false);
     m_tree->setItemsExpandable(false);
     m_tree->setSortingEnabled(true);
-    m_tree->sortByColumn(0, Qt::AscendingOrder);
+    connect(m_tree->header(), &QHeaderView::sortIndicatorChanged, this, &FileTab::setSort);
+    applySort();
     m_tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_tree->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_tree->setEditTriggers(QAbstractItemView::EditKeyPressed);
@@ -407,6 +479,8 @@ FileTab::FileTab(const QString &startPath, QWidget *parent) : QWidget(parent)
     m_icons->setSpacing(8);
     m_icons->setWordWrap(true);
     m_icons->setUniformItemSizes(false);
+    m_gridLegendDelegate = new GridLegendDelegate(this);
+    m_icons->setItemDelegate(m_gridLegendDelegate);
     m_icons->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_icons->setEditTriggers(QAbstractItemView::EditKeyPressed);
     m_icons->setDragEnabled(true);
@@ -664,6 +738,27 @@ void FileTab::refreshModel()
         oldIconsSelection->deleteLater();
     oldProxy->deleteLater();
     oldModel->deleteLater();
+
+    applySort();
+}
+
+void FileTab::setSort(int column, Qt::SortOrder order)
+{
+    if (column < 0 || column > 3)
+        return;
+
+    m_sortColumn = column;
+    m_sortOrder = order;
+    applySort();
+    emit sortChanged(column, order);
+}
+
+void FileTab::applySort()
+{
+    // sortByColumn() atualiza o indicador do cabeçalho; bloquear esse sinal
+    // evita que a reaplicação programática reentre em setSort().
+    const QSignalBlocker blocked(m_tree->header());
+    m_tree->sortByColumn(m_sortColumn, m_sortOrder);
 }
 
 void FileTab::back()
@@ -761,7 +856,7 @@ void FileTab::applyUiPreferences(const UiPreferences &prefs)
     m_treeIconBase = QSize(treeSide, treeSide);
     m_gridIconBase = QSize(prefs.iconSize, prefs.iconSize);
     m_gridBase = QSize(gridCell, gridCell);
-    setZoom(m_zoom);
+    setGridLegends(prefs.gridSize, prefs.gridDate);
 
     for (int col = 0; col <= 3; ++col)
         m_tree->header()->setSectionHidden(col,
@@ -786,10 +881,23 @@ void FileTab::setZoom(int percent)
     const int treeSide = qMax(8, m_treeIconBase.width() * m_zoom / 100);
     const int gridSide = qMax(16, m_gridIconBase.width() * m_zoom / 100);
     const int cell = qMax(96, m_gridBase.width() * m_zoom / 100);
+    const int legendLines = (m_gridSizeLegend ? 1 : 0) + (m_gridDateLegend ? 1 : 0);
+    const int legendHeight = legendLines * QFontMetrics(m_icons->font()).height();
     m_icons->setIconSize(QSize(gridSide, gridSide));
-    m_icons->setGridSize(QSize(cell, cell));
+    m_icons->setGridSize(QSize(cell, cell + legendHeight));
     m_tree->setIconSize(QSize(treeSide, treeSide));
     emit zoomChanged(m_zoom);
+}
+
+void FileTab::setGridLegends(bool size, bool date)
+{
+    m_gridSizeLegend = size;
+    m_gridDateLegend = date;
+    m_gridLegendDelegate->setLegends(size, date);
+    setZoom(m_zoom);
+    // A altura da célula pode não mudar (ex.: true/false → false/true),
+    // mas o texto da legenda muda: garanta o repaint do viewport.
+    m_icons->viewport()->update();
 }
 
 void FileTab::setPreviewVisible(bool visible)
@@ -806,10 +914,11 @@ void FileTab::setShowHidden(bool show)
     m_model->setFilter(f);
 }
 
-void FileTab::setViewActions(QAction *icons, QAction *preview, QAction *hidden,
+void FileTab::setViewActions(QAction *list, QAction *grid, QAction *preview, QAction *hidden,
                              QAction *zoomIn, QAction *zoomOut, QAction *zoomReset)
 {
-    m_iconsAct = icons;
+    m_listAct = list;
+    m_iconsAct = grid;
     m_previewAct = preview;
     m_hiddenAct = hidden;
     m_zoomInAct = zoomIn;
@@ -920,7 +1029,9 @@ void FileTab::showContextMenu(const QPoint &pos)
         menu.addSeparator();
         addPaste();
         menu.addSeparator();
-        menu.addAction(QIcon::fromTheme("view-refresh"), label(tr("Atualizar")), this, [this] { refreshModel(); });
+        QAction *refresh = menu.addAction(QIcon::fromTheme("view-refresh"), label(tr("Atualizar")),
+                                          this, [this] { refreshModel(); });
+        refresh->setObjectName(QStringLiteral("refreshAction"));
         QMenu *view = menu.addMenu(label(tr("Exibir")));
         addViewMenu(view);
         menu.addAction(label(tr("Abrir terminal aqui")), this, [this] { openTerminal(m_path); });
@@ -1025,21 +1136,10 @@ void FileTab::addNewMenu(QMenu *menu)
 
 void FileTab::addViewMenu(QMenu *menu)
 {
-    QAction *details = menu->addAction(tr("Lista detalhada"));
-    QAction *grid = menu->addAction(tr("Grade de ícones"));
-    details->setCheckable(true);
-    grid->setCheckable(true);
-    const bool icons = m_iconsAct && m_iconsAct->isChecked();
-    details->setChecked(!icons);
-    grid->setChecked(icons);
-    connect(details, &QAction::triggered, this, [this] {
-        if (m_iconsAct)
-            m_iconsAct->setChecked(false);
-    });
-    connect(grid, &QAction::triggered, this, [this] {
-        if (m_iconsAct)
-            m_iconsAct->setChecked(true);
-    });
+    if (m_listAct)
+        menu->addAction(m_listAct);
+    if (m_iconsAct)
+        menu->addAction(m_iconsAct);
 
     menu->addSeparator();
     if (m_previewAct)

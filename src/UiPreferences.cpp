@@ -42,6 +42,8 @@ UiPreferences defaultUiPreferences(UiPreset preset)
 {
     UiPreferences prefs;
     prefs.preset = preset;
+    prefs.gridSize = false;
+    prefs.gridDate = false;
     switch (preset) {
     case UiPreset::Compact:
         prefs.density = 0;
@@ -67,6 +69,29 @@ UiPreferences defaultUiPreferences(UiPreset preset)
     return prefs;
 }
 
+QStringList normalizeColumns(const QStringList &input, UiPreset preset)
+{
+    QList<int> indices;
+    for (const QString &column : input) {
+        if (!validColumn(column))
+            continue;
+        const int index = column.toInt();
+        if (!indices.contains(index))
+            indices.append(index);
+    }
+    if (indices.isEmpty())
+        return defaultUiPreferences(preset).columns;
+
+    std::sort(indices.begin(), indices.end());
+    if (!indices.contains(0))
+        indices.prepend(0);
+
+    QStringList result;
+    for (int index : indices)
+        result << QString::number(index);
+    return result;
+}
+
 UiPreferences loadUiPreferences(QSettings &settings)
 {
     const UiPreset preset = presetFromKey(
@@ -84,11 +109,15 @@ UiPreferences loadUiPreferences(QSettings &settings)
 
     const QStringList columns =
         settings.value(QLatin1String("ui/columns"), prefs.columns).toStringList();
-    if (!columns.isEmpty() && std::all_of(columns.cbegin(), columns.cend(), validColumn))
-        prefs.columns = columns;
+    prefs.columns = normalizeColumns(columns, preset);
 
     if (settings.contains(QLatin1String("ui/preview")))
         prefs.preview = settings.value(QLatin1String("ui/preview")).toBool();
+
+    if (settings.contains(QLatin1String("ui/gridSize")))
+        prefs.gridSize = settings.value(QLatin1String("ui/gridSize")).toBool();
+    if (settings.contains(QLatin1String("ui/gridDate")))
+        prefs.gridDate = settings.value(QLatin1String("ui/gridDate")).toBool();
 
     return prefs;
 }
@@ -100,4 +129,6 @@ void saveUiPreferences(QSettings &settings, const UiPreferences &prefs)
     settings.setValue(QLatin1String("ui/iconSize"), prefs.iconSize);
     settings.setValue(QLatin1String("ui/columns"), prefs.columns);
     settings.setValue(QLatin1String("ui/preview"), prefs.preview);
+    settings.setValue(QLatin1String("ui/gridSize"), prefs.gridSize);
+    settings.setValue(QLatin1String("ui/gridDate"), prefs.gridDate);
 }

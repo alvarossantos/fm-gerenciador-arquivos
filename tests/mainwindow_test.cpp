@@ -1,22 +1,35 @@
 #include <QtTest>
 
+#include <QAbstractItemModel>
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QCheckBox>
+#include <QColor>
 #include <QComboBox>
 #include <QContextMenuEvent>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QEvent>
+#include <QFile>
+#include <QFileInfo>
 #include <QHBoxLayout>
+#include <QHeaderView>
+#include <QItemSelectionModel>
+#include <QKeyEvent>
 #include <QListWidget>
 #include <QKeySequence>
 #include <QPushButton>
 #include <QLineEdit>
 #include <QListView>
 #include <QMenu>
+#include <QMessageBox>
+#include <QPalette>
+#include <QPoint>
 #include <QScopeGuard>
 #include <QSettings>
+#include <QSignalSpy>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTabBar>
@@ -31,6 +44,7 @@
 
 #include "FileTab.h"
 #include "MainWindow.h"
+#include "ThemeManager.h"
 #include "UiPreferences.h"
 
 namespace {
@@ -88,6 +102,18 @@ QStringList viewMenuLabels(QMenu *menu)
     return labels;
 }
 
+QModelIndex findRowNamed(QTreeView *view, const QString &name)
+{
+    if (!view)
+        return {};
+    for (int row = 0; row < view->model()->rowCount(view->rootIndex()); ++row) {
+        const QModelIndex index = view->model()->index(row, 0, view->rootIndex());
+        if (view->model()->data(index).toString() == name)
+            return index;
+    }
+    return {};
+}
+
 void closePopups()
 {
     while (QWidget *p = qApp->activePopupWidget())
@@ -109,6 +135,45 @@ bool usesIconMode(const FileTab *tab)
 {
     auto *stack = tab->findChild<QStackedWidget *>();
     return stack && qobject_cast<QListView *>(stack->currentWidget()) != nullptr;
+}
+
+QStringList viewItemNames(QAbstractItemView *view)
+{
+    QStringList names;
+    if (!view || !view->model())
+        return names;
+    QAbstractItemModel *model = view->model();
+    const QModelIndex root = view->rootIndex();
+    for (int row = 0; row < model->rowCount(root); ++row)
+        names << model->data(model->index(row, 0, root), Qt::DisplayRole).toString();
+    return names;
+}
+
+QListView *iconViewOf(FileTab *tab)
+{
+    for (QListView *candidate : tab->findChildren<QListView *>())
+        if (candidate->viewMode() == QListView::IconMode)
+            return candidate;
+    return nullptr;
+}
+
+bool triggerRefreshAction(FileTab *tab)
+{
+    bool triggered = false;
+    setContextMenuHookForTests([&triggered](QMenu *menu, const QStringList &) {
+        QTimer::singleShot(0, [] { closePopups(); });
+        for (QAction *action : menu->actions()) {
+            if (action->objectName() != QStringLiteral("refreshAction"))
+                continue;
+            triggered = true;
+            action->trigger();
+            break;
+        }
+    });
+    const auto resetHook = qScopeGuard([] { setContextMenuHookForTests({}); });
+    const bool opened = openEmptyContextMenu(tab);
+    QApplication::processEvents();
+    return opened && triggered;
 }
 
 QToolBar *toolbar(QWidget *window)
@@ -155,13 +220,60 @@ int visibleBreadcrumbButtons(QWidget *window)
 bool samePreferences(const UiPreferences &a, const UiPreferences &b)
 {
     return a.preset == b.preset && a.density == b.density && a.iconSize == b.iconSize
-           && a.columns == b.columns && a.preview == b.preview;
+           && a.columns == b.columns && a.preview == b.preview && a.gridSize == b.gridSize
+           && a.gridDate == b.gridDate;
 }
 
 QListWidgetItem *findPlace(QListWidget *places, const QString &label)
 {
     const auto items = places->findItems(label, Qt::MatchExactly);
     return items.isEmpty() ? nullptr : items.first();
+}
+
+bool writePaletteFile(const QString &path, const QString &surface, const QString &primary)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QByteArray json = QStringLiteral(
+                                "{\"surface\":\"%1\",\"onSurface\":\"#f2f2f2\","
+                                "\"primary\":\"%2\",\"onPrimary\":\"#ffffff\","
+                                "\"primaryContainer\":\"#333344\"}")
+                                .arg(surface, primary)
+                                .toUtf8();
+    return f.write(json) == json.size();
+}
+
+bool menuHasNoEmptyActionText(QMenu *menu)
+{
+    if (!menu)
+        return false;
+    for (QAction *a : menu->actions())
+        if (!a->isSeparator() && a->text().trimmed().isEmpty())
+            return false;
+    return true;
+}
+
+bool menuActionsAreEnabled(QMenu *menu)
+{
+    if (!menu)
+        return false;
+    for (QAction *a : menu->actions())
+        if (!a->isSeparator() && !a->isEnabled())
+            return false;
+    return true;
+}
+
+bool tabReachesButton(QWidget *window, QToolButton *button,
+                      Qt::KeyboardModifier modifier = Qt::NoModifier)
+{
+    for (int i = 0; i < 16; ++i) {
+        if (button->hasFocus())
+            return true;
+        QWidget *focus = QApplication::focusWidget();
+        QTest::keyClick(focus ? focus : window, Qt::Key_Tab, modifier);
+    }
+    return button->hasFocus();
 }
 
 } // namespace
@@ -186,16 +298,95 @@ private slots:
     void zoomActionsReachActiveTab();
     void zoomActionsApplyToAllTabs();
     void newTabInheritsCurrentZoom();
+    void viewMenuSeparatesZoomFromGridLegends();
+    void shortcutActionsHaveReadableLabels();
+    void viewModeSwitchesBothWaysFromToolbarAndContextMenu();
     void viewMenuSharesToolbarStateAcrossTabs();
     void sharedActionsSurviveToolbarRemoval();
+    void onlyTwoMenusKeepEveryCommand();
+    void newWindowForwardsEffectiveThemeFile();
     void narrowWindowKeepsActionsAndAncestors();
     void breadcrumbLimitPerPreset();
     void switchPresetResetsManualAdjustments();
     void restoreDefaultsPersistsAfterRestart();
     void previewTogglePersistsAfterRestart();
+    void gridLegendActionsPersistAndApplyToTabs();
     void customizeActionOpensDialog();
     void customizeDialogPersistsManualAdjustments();
+    void keyboardOpensMenusAt320InEveryPreset();
+    void returnKeysDoNotReopenVisibleMenus();
+    void tabsMenuUsesFullPathForDuplicates();
+    void localDialogsHaveReadableText();
+    void sortIsPerTabAndSurvivesRefresh();
+    void paletteChangeKeepsMenusAndFocusReadable();
+    void liveThemeReloadKeepsOpenMenuState();
 };
+
+void MainWindowTest::shortcutActionsHaveReadableLabels()
+{
+    MainWindow w(QDir::homePath());
+    auto *focus = w.findChild<QAction *>(QStringLiteral("focusPathAction"));
+    auto *close = w.findChild<QAction *>(QStringLiteral("closeTabAction"));
+    QVERIFY(focus && close);
+    QCOMPARE(focus->text(), QStringLiteral("Editar caminho"));
+    QCOMPARE(close->text(), QStringLiteral("Fechar aba"));
+    QCOMPARE(focus->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_L));
+    QCOMPARE(close->shortcut(), QKeySequence(Qt::CTRL | Qt::Key_W));
+}
+
+void MainWindowTest::viewModeSwitchesBothWaysFromToolbarAndContextMenu()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    MainWindow w(root.path());
+    w.show();
+    QApplication::processEvents();
+
+    QAction *grid = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
+    QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
+    auto *tab = w.findChild<FileTab *>();
+    QVERIFY(grid && list && tab);
+    auto *stack = tab->findChild<QStackedWidget *>();
+    QVERIFY(stack);
+
+    auto verifyMode = [&](bool icons) {
+        QCOMPARE(grid->isChecked(), icons);
+        if (icons)
+            QVERIFY(qobject_cast<QListView *>(stack->currentWidget()));
+        else
+            QVERIFY(qobject_cast<QTreeView *>(stack->currentWidget()));
+    };
+    grid->trigger();
+    verifyMode(true);
+    list->trigger();
+    verifyMode(false);
+    grid->trigger();
+    verifyMode(true);
+
+    auto switchFromContextMenu = [&](const QString &label) {
+        bool triggered = false;
+        setContextMenuHookForTests([&](QMenu *menu, const QStringList &) {
+            QTimer::singleShot(0, [] { closePopups(); });
+            QMenu *view = nullptr;
+            for (QAction *action : menu->actions())
+                if (action->text() == QStringLiteral("Exibir"))
+                    view = action->menu();
+            QAction *action = menuAction(view, label);
+            if (action) {
+                triggered = true;
+                action->trigger();
+            }
+        });
+        const auto restore = qScopeGuard([] { setContextMenuHookForTests({}); });
+        QVERIFY(openEmptyContextMenu(tab));
+        QApplication::processEvents();
+        QVERIFY(triggered);
+    };
+    switchFromContextMenu(QStringLiteral("Lista detalhada"));
+    verifyMode(false);
+    switchFromContextMenu(QStringLiteral("Grade de ícones"));
+    verifyMode(true);
+}
 
 void MainWindowTest::placesHighlightFollowsGoToBackForward()
 {
@@ -779,6 +970,30 @@ void MainWindowTest::newTabInheritsCurrentZoom()
     QCOMPARE(second->zoom(), 150);
 }
 
+void MainWindowTest::viewMenuSeparatesZoomFromGridLegends()
+{
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    auto *menu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    QVERIFY(menu);
+    auto *zoomOut = findAction(&w, QStringLiteral("Diminuir zoom"));
+    auto *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
+    auto *zoomReset = findAction(&w, QStringLiteral("Zoom original"));
+    auto *size = findAction(&w, QStringLiteral("Mostrar tamanho na grade"));
+    auto *date = findAction(&w, QStringLiteral("Mostrar data na grade"));
+    QVERIFY(zoomOut && zoomIn && zoomReset && size && date);
+
+    const QStringList labels = viewMenuLabels(menu);
+    const QStringList expectedTail{zoomOut->text(), zoomIn->text(), zoomReset->text(),
+                                   QStringLiteral("---"), size->text(), date->text()};
+    QVERIFY(labels.size() >= expectedTail.size());
+    QCOMPARE(labels.mid(labels.size() - expectedTail.size()), expectedTail);
+}
+
 void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
 {
     QTemporaryDir root;
@@ -793,13 +1008,14 @@ void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
     auto *tabs = w.findChild<QTabWidget *>();
     QVERIFY(tabs);
     QCOMPARE(tabs->count(), 1);
-    auto *iconsAct = findAction(&w, QStringLiteral("Visão em ícones"));
+    auto *iconsAct = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
+    auto *listAct = w.findChild<QAction *>(QStringLiteral("listViewAction"));
     auto *previewAct = findAction(&w, QStringLiteral("Painel de pré-visualização"));
     auto *hiddenAct = findAction(&w, QStringLiteral("Mostrar arquivos ocultos"));
     auto *zoomInAct = findAction(&w, QStringLiteral("Aumentar zoom"));
     auto *zoomOutAct = findAction(&w, QStringLiteral("Diminuir zoom"));
     auto *zoomResetAct = findAction(&w, QStringLiteral("Zoom original"));
-    QVERIFY(iconsAct && previewAct && hiddenAct && zoomInAct && zoomOutAct && zoomResetAct);
+    QVERIFY(iconsAct && listAct && previewAct && hiddenAct && zoomInAct && zoomOutAct && zoomResetAct);
     const int windowActions = w.actions().size();
 
     QAction *newTabAct = findAction(&w, QStringLiteral("Nova aba"));
@@ -847,8 +1063,10 @@ void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
         noNewWindowActions = w.actions().size() == windowActions;
         QAction *details = menuAction(view, QStringLiteral("Lista detalhada"));
         QAction *grid = menuAction(view, QStringLiteral("Grade de ícones"));
-        localModes = details && grid && details->isCheckable() && grid->isCheckable()
-                     && details->shortcut().isEmpty() && grid->shortcut().isEmpty();
+        localModes = details == listAct && grid == iconsAct
+                     && details->isCheckable() && grid->isCheckable()
+                     && details->shortcut().isEmpty()
+                     && grid->shortcut() == QKeySequence(Qt::CTRL | Qt::Key_1);
         gridFollowsToolbar = grid && grid->isChecked() == iconsAct->isChecked();
         injectedAreToolbarActions =
             menuAction(view, previewAct->text()) == previewAct
@@ -863,7 +1081,7 @@ void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
     QVERIFY(injectedAreToolbarActions);
     QVERIFY(noNewWindowActions);
 
-    // Ação local do submenu aplica setChecked na ação compartilhada.
+    // Ação do submenu aplica setChecked na ação compartilhada.
     captureViewMenu(firstTab, [&](QMenu *, QMenu *view) {
         QAction *details = menuAction(view, QStringLiteral("Lista detalhada"));
         if (details)
@@ -897,7 +1115,7 @@ void MainWindowTest::viewMenuSharesToolbarStateAcrossTabs()
     QVERIFY(usesIconMode(firstTab));
     QVERIFY(usesIconMode(secondTab));
 
-    iconsAct->trigger(); // alternância pela barra
+    listAct->trigger(); // alternância pela barra
     QVERIFY(!iconsAct->isChecked());
     QVERIFY(!usesIconMode(firstTab));
     QVERIFY(!usesIconMode(secondTab));
@@ -933,20 +1151,28 @@ void MainWindowTest::sharedActionsSurviveToolbarRemoval()
     QVERIFY2(choosePreset(&w, QStringLiteral("Compacta")), "ação Compacta ausente");
     QApplication::processEvents();
 
-    auto *more = w.findChild<QMenu *>(QStringLiteral("moreMenu"));
+    auto *files = w.findChild<QMenu *>(QStringLiteral("filesMenu"));
+    auto *view = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
     auto *tb = toolbar(&w);
-    QVERIFY(more && tb);
-    QAction *icons = findAction(&w, QStringLiteral("Visão em ícones"));
+    QVERIFY(files && view && tb);
+    const auto inMenus = [files, view](const QString &text) {
+        return menuAction(files, text) || menuAction(view, text);
+    };
+    QAction *icons = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
+    QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
     QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
-    QVERIFY(icons && zoomIn);
+    QVERIFY(icons && list && zoomIn);
     const QKeySequence zoomShortcut = zoomIn->shortcut();
 
-    QVERIFY2(tb->widgetForAction(icons) == nullptr, "Visão em ícones ainda na toolbar");
+    QVERIFY2(tb->widgetForAction(icons) == nullptr, "Grade de ícones ainda na toolbar");
+    QVERIFY2(tb->widgetForAction(list) == nullptr, "Lista detalhada ainda na toolbar");
     QVERIFY2(tb->widgetForAction(zoomIn) == nullptr, "zoom ainda na toolbar");
-    QCOMPARE(menuAction(more, icons->text()), icons);
-    QCOMPARE(menuAction(more, zoomIn->text()), zoomIn);
+    QVERIFY2(inMenus(icons->text()), "Grade de ícones fora dos dois menus");
+    QVERIFY2(inMenus(list->text()), "Lista detalhada fora dos dois menus");
+    QVERIFY2(inMenus(zoomIn->text()), "zoom fora dos dois menus");
     QCOMPARE(zoomIn->shortcut(), zoomShortcut);
     QCOMPARE(w.actions().count(icons), 1);
+    QCOMPARE(w.actions().count(list), 1);
     QCOMPARE(w.actions().count(zoomIn), 1);
 
     icons->trigger();
@@ -957,6 +1183,99 @@ void MainWindowTest::sharedActionsSurviveToolbarRemoval()
         QVERIFY2(usesIconMode(tab), "ação recolhida não trocou a visão em todas as abas");
         QCOMPARE(tab->zoom(), 125);
     }
+
+    list->trigger();
+    QApplication::processEvents();
+    for (int i = 0; i < tabs->count(); ++i) {
+        auto *tab = static_cast<FileTab *>(tabs->widget(i));
+        QVERIFY2(!usesIconMode(tab), "ação Lista detalhada recolhida não trocou a visão em todas as abas");
+        QCOMPARE(tab->zoom(), 125);
+    }
+}
+
+void MainWindowTest::onlyTwoMenusKeepEveryCommand()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+
+    auto *files = w.findChild<QMenu *>(QStringLiteral("filesMenu"));
+    auto *view = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    QVERIFY(files && view);
+    QVERIFY2(!w.findChild<QAction *>(QStringLiteral("moreMenu")),
+             "terceiro menu Mais opções ainda presente");
+    QVERIFY2(!w.findChild<QMenu *>(QStringLiteral("moreMenu")),
+             "menu Mais opções ainda presente");
+
+    const auto inMenus = [files, view](const QString &text) {
+        return menuAction(files, text) || menuAction(view, text);
+    };
+    for (const QString &label : {
+             QStringLiteral("Nova janela"), QStringLiteral("Nova aba (Ctrl+T)"),
+             QStringLiteral("Lista detalhada"), QStringLiteral("Grade de ícones"),
+             QStringLiteral("Painel de pré-visualização (F11)"),
+             QStringLiteral("Mostrar arquivos ocultos (Ctrl+H)"),
+             QStringLiteral("Aumentar zoom"), QStringLiteral("Diminuir zoom"),
+             QStringLiteral("Zoom original"),
+             QStringLiteral("Mostrar tamanho na grade"), QStringLiteral("Mostrar data na grade")}) {
+        QVERIFY2(inMenus(label), qPrintable(QStringLiteral("comando fora dos dois menus: ") + label));
+    }
+
+    auto *interfaceMenu = w.findChild<QMenu *>(QStringLiteral("interfaceMenu"));
+    QVERIFY2(interfaceMenu, "submenu Interface ausente");
+    QVERIFY2(files->actions().contains(interfaceMenu->menuAction())
+                 || view->actions().contains(interfaceMenu->menuAction()),
+             "submenu Interface não está em Arquivos nem Visualização");
+
+    for (const QString &preset : {QStringLiteral("Compacta"), QStringLiteral("Equilibrada"),
+                                  QStringLiteral("Avançada")}) {
+        QVERIFY2(choosePreset(&w, preset), qPrintable(preset + QStringLiteral(" inacessível")));
+        QVERIFY2(menuAction(interfaceMenu, preset)->isChecked(),
+                 qPrintable(preset + QStringLiteral(" não ficou marcada")));
+    }
+}
+
+void MainWindowTest::newWindowForwardsEffectiveThemeFile()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+    const QString theme = QDir(root.path()).filePath(QStringLiteral("theme.json"));
+    QFile themeFile(theme);
+    QVERIFY(themeFile.open(QIODevice::WriteOnly));
+    QVERIFY(themeFile.write("{\"colors\":{\"dark\":{\"primary\":\"#123456\"}}}") > 0);
+    themeFile.close();
+
+    MainWindow w(home);
+    w.setThemeFile(theme);
+    QSignalSpy spy(&w, &MainWindow::newWindowRequested);
+    QVERIFY(spy.isValid());
+    QAction *action = w.findChild<QAction *>(QStringLiteral("newWindowAction"));
+    QVERIFY(action);
+    action->trigger();
+    QCOMPARE(spy.count(), 1);
+    const QStringList args = spy.takeFirst().at(0).toStringList();
+    QCOMPARE(args.size(), 3);
+    QCOMPARE(args.at(0), home);
+    QCOMPARE(args.at(1), QStringLiteral("--theme-file"));
+    QCOMPARE(args.at(2), theme);
+
+    MainWindow w2(home);
+    QSignalSpy spy2(&w2, &MainWindow::newWindowRequested);
+    QVERIFY(spy2.isValid());
+    QAction *action2 = w2.findChild<QAction *>(QStringLiteral("newWindowAction"));
+    QVERIFY(action2);
+    action2->trigger();
+    QCOMPARE(spy2.count(), 1);
+    QCOMPARE(spy2.takeFirst().at(0).toStringList(), QStringList{home});
 }
 
 void MainWindowTest::narrowWindowKeepsActionsAndAncestors()
@@ -974,13 +1293,21 @@ void MainWindowTest::narrowWindowKeepsActionsAndAncestors()
     QVERIFY(choosePreset(&w, QStringLiteral("Compacta")));
     QApplication::processEvents();
 
-    auto *more = w.findChild<QMenu *>(QStringLiteral("moreMenu"));
-    QVERIFY(more);
+    auto *files = w.findChild<QMenu *>(QStringLiteral("filesMenu"));
+    auto *view = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    auto *tb = toolbar(&w);
+    QVERIFY(files && view && tb);
+    const auto inMenus = [files, view](const QString &text) {
+        return menuAction(files, text) || menuAction(view, text);
+    };
+    QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
     QAction *preview = findAction(&w, QStringLiteral("Painel de pré-visualização"));
     QAction *zoomIn = findAction(&w, QStringLiteral("Aumentar zoom"));
-    QVERIFY(preview && zoomIn);
-    QCOMPARE(menuAction(more, preview->text()), preview);
-    QCOMPARE(menuAction(more, zoomIn->text()), zoomIn);
+    QVERIFY(list && preview && zoomIn);
+    QVERIFY2(tb->widgetForAction(list) == nullptr, "Lista detalhada ainda na toolbar estreita");
+    QVERIFY2(inMenus(list->text()), "Lista detalhada fora dos dois menus na janela estreita");
+    QVERIFY2(inMenus(preview->text()), "Pré-visualização fora dos dois menus na janela estreita");
+    QVERIFY2(inMenus(zoomIn->text()), "zoom fora dos dois menus na janela estreita");
 
     w.activateWindow();
     QTest::keyClick(&w, Qt::Key_L, Qt::ControlModifier);
@@ -1039,7 +1366,7 @@ void MainWindowTest::switchPresetResetsManualAdjustments()
     findAction(&w, QStringLiteral("Nova aba"))->trigger();
     QApplication::processEvents();
     findAction(&w, QStringLiteral("Aumentar zoom"))->trigger();
-    findAction(&w, QStringLiteral("Visão em ícones"))->trigger();
+    w.findChild<QAction *>(QStringLiteral("gridViewAction"))->trigger();
     QCOMPARE(static_cast<FileTab *>(tabs->widget(0))->zoom(), 125);
 
     QVERIFY(choosePreset(&w, QStringLiteral("Avançada")));
@@ -1129,6 +1456,70 @@ void MainWindowTest::previewTogglePersistsAfterRestart()
     QVERIFY(preview && preview->isChecked());
 }
 
+void MainWindowTest::gridLegendActionsPersistAndApplyToTabs()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    {
+        MainWindow w(home);
+        auto *viewMenu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+        auto *size = w.findChild<QAction *>(QStringLiteral("gridSizeAction"));
+        auto *date = w.findChild<QAction *>(QStringLiteral("gridDateAction"));
+        auto *tab = w.findChild<FileTab *>();
+        QVERIFY(viewMenu && size && date && tab);
+        QVERIFY(size->isCheckable());
+        QVERIFY(date->isCheckable());
+        const QList<QAction *> actions = viewMenu->actions();
+        QVERIFY(actions.contains(size) && actions.contains(date));
+        QCOMPARE(actions.value(actions.size() - 2), size);
+        QCOMPARE(actions.last(), date);
+        QVERIFY(!size->isChecked() && !date->isChecked());
+        QVERIFY(!tab->gridSize() && !tab->gridDate());
+
+        size->trigger();
+        QVERIFY(size->isChecked());
+        QVERIFY(w.uiPreferences().gridSize);
+        QVERIFY(tab->gridSize());
+        QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
+        QVERIFY(settings.value(QStringLiteral("ui/gridSize")).toBool());
+
+        date->trigger();
+        QVERIFY(date->isChecked());
+        QVERIFY(w.uiPreferences().gridDate);
+        QVERIFY(tab->gridDate());
+        QVERIFY(settings.value(QStringLiteral("ui/gridDate")).toBool());
+        w.close();
+    }
+
+    MainWindow restarted(home);
+    auto *size = restarted.findChild<QAction *>(QStringLiteral("gridSizeAction"));
+    auto *date = restarted.findChild<QAction *>(QStringLiteral("gridDateAction"));
+    auto *tab = restarted.findChild<FileTab *>();
+    QVERIFY(size && date && tab);
+    QVERIFY(size->isChecked() && date->isChecked());
+    QVERIFY(restarted.uiPreferences().gridSize && restarted.uiPreferences().gridDate);
+    QVERIFY(tab->gridSize() && tab->gridDate());
+
+    auto *interfaceMenu = restarted.findChild<QMenu *>(QStringLiteral("interfaceMenu"));
+    QVERIFY(interfaceMenu);
+    QAction *restore = menuAction(interfaceMenu, QStringLiteral("Restaurar padrões"));
+    QVERIFY(restore);
+    restore->trigger();
+    QVERIFY2(samePreferences(restarted.uiPreferences(), defaultUiPreferences(UiPreset::Balanced)),
+             "Restaurar padrões deve zerar gridSize/gridDate");
+    QVERIFY(!size->isChecked() && !date->isChecked());
+    QVERIFY(!tab->gridSize() && !tab->gridDate());
+    QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
+    QVERIFY(settings.contains(QStringLiteral("ui/gridSize")));
+    QVERIFY(settings.contains(QStringLiteral("ui/gridDate")));
+    QVERIFY(!settings.value(QStringLiteral("ui/gridSize")).toBool());
+    QVERIFY(!settings.value(QStringLiteral("ui/gridDate")).toBool());
+}
+
 void MainWindowTest::customizeActionOpensDialog()
 {
     QTemporaryDir root;
@@ -1156,14 +1547,11 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
     QVERIFY(root.isValid());
     const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
     QVERIFY(QDir().mkpath(home));
+    const QStringList selectedColumns{QStringLiteral("0"), QStringLiteral("3")};
 
-    {
-        MainWindow w(home);
-        w.show();
-        QApplication::processEvents();
-        QVERIFY(choosePreset(&w, QStringLiteral("Avançada")));
-        auto *places = w.findChild<QListWidget *>(QStringLiteral("places"));
-        QVERIFY(places);
+    const auto openCustomize = [](MainWindow *window) {
+        auto *places = window->findChild<QListWidget *>(QStringLiteral("places"));
+        QVERIFY2(places, "lista lateral ausente");
         QListWidgetItem *entry = findPlace(places, QStringLiteral("Personalizar…"));
         QVERIFY2(entry && !entry->isHidden(), "Personalizar…” ausente na lateral");
         places->scrollToItem(entry);
@@ -1171,17 +1559,32 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
         QTest::mouseClick(places->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(),
                           places->visualItemRect(entry).center());
         QApplication::processEvents();
+    };
+
+    {
+        MainWindow w(home);
+        w.show();
+        QApplication::processEvents();
+        QVERIFY(choosePreset(&w, QStringLiteral("Avançada")));
+        openCustomize(&w);
 
         auto *dialog = w.findChild<QDialog *>(QStringLiteral("customizeDialog"));
         QVERIFY2(dialog, "Personalizar… da lateral não abriu o painel");
         auto *density = dialog->findChild<QComboBox *>(QStringLiteral("customDensity"));
-        auto *columns = dialog->findChild<QComboBox *>(QStringLiteral("customColumns"));
+        auto *column0 = dialog->findChild<QCheckBox *>(QStringLiteral("customColumn0"));
+        auto *column1 = dialog->findChild<QCheckBox *>(QStringLiteral("customColumn1"));
+        auto *column2 = dialog->findChild<QCheckBox *>(QStringLiteral("customColumn2"));
+        auto *column3 = dialog->findChild<QCheckBox *>(QStringLiteral("customColumn3"));
         auto *iconSize = dialog->findChild<QComboBox *>(QStringLiteral("customIconSize"));
         auto *preview = dialog->findChild<QCheckBox *>(QStringLiteral("customPreview"));
         auto *buttons = dialog->findChild<QDialogButtonBox *>();
-        QVERIFY(density && columns && iconSize && preview && buttons);
+        QVERIFY(density && column0 && column1 && column2 && column3 && iconSize && preview
+                && buttons);
+        QVERIFY(column0->isChecked());
+        QVERIFY(!column0->isEnabled());
+        column1->setChecked(false);
+        column2->setChecked(false);
         density->setCurrentIndex(0);
-        columns->setCurrentIndex(2);
         iconSize->setCurrentIndex(0);
         preview->setChecked(true);
         QPushButton *ok = buttons->button(QDialogButtonBox::Ok);
@@ -1193,14 +1596,34 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
         QCOMPARE(prefs.preset, UiPreset::Advanced);
         QCOMPARE(prefs.density, 0);
         QCOMPARE(prefs.iconSize, 32);
-        QCOMPARE(prefs.columns.size(), 3);
+        QCOMPARE(prefs.columns, selectedColumns);
         QVERIFY(prefs.preview);
 
         QSettings settings(QStringLiteral("fm"), QStringLiteral("fm"));
         QCOMPARE(settings.value(QStringLiteral("ui/density")).toInt(), 0);
         QCOMPARE(settings.value(QStringLiteral("ui/iconSize")).toInt(), 32);
-        QCOMPARE(settings.value(QStringLiteral("ui/columns")).toStringList().size(), 3);
+        QCOMPARE(settings.value(QStringLiteral("ui/columns")).toStringList(), selectedColumns);
         QVERIFY(settings.value(QStringLiteral("ui/preview")).toBool());
+
+        openCustomize(&w);
+        auto *reopened = w.findChild<QDialog *>(QStringLiteral("customizeDialog"));
+        QVERIFY2(reopened, "diálogo não reabriu após aceitar");
+        auto *reopened0 = reopened->findChild<QCheckBox *>(QStringLiteral("customColumn0"));
+        auto *reopened1 = reopened->findChild<QCheckBox *>(QStringLiteral("customColumn1"));
+        auto *reopened2 = reopened->findChild<QCheckBox *>(QStringLiteral("customColumn2"));
+        auto *reopened3 = reopened->findChild<QCheckBox *>(QStringLiteral("customColumn3"));
+        QVERIFY(reopened0 && reopened1 && reopened2 && reopened3);
+        QVERIFY(reopened0->isChecked());
+        QVERIFY(!reopened0->isEnabled());
+        QVERIFY(reopened3->isChecked());
+        QVERIFY(!reopened1->isChecked());
+        QVERIFY(!reopened2->isChecked());
+        auto *reopenedButtons = reopened->findChild<QDialogButtonBox *>();
+        QVERIFY(reopenedButtons);
+        QPushButton *cancel = reopenedButtons->button(QDialogButtonBox::Cancel);
+        QVERIFY(cancel);
+        cancel->click();
+        QApplication::processEvents();
         w.close();
     }
 
@@ -1208,11 +1631,716 @@ void MainWindowTest::customizeDialogPersistsManualAdjustments()
     UiPreferences expected = defaultUiPreferences(UiPreset::Advanced);
     expected.density = 0;
     expected.iconSize = 32;
-    expected.columns = QStringList{QStringLiteral("0"), QStringLiteral("1"),
-                                   QStringLiteral("2")};
+    expected.columns = selectedColumns;
     expected.preview = true;
     QVERIFY2(samePreferences(restarted.uiPreferences(), expected),
              "ajustes manuais não sobreviveram ao reinício");
+
+    auto *tree = restarted.findChild<QTreeView *>();
+    QVERIFY2(tree, "QTreeView ausente após reinício");
+    QHeaderView *header = tree->header();
+    QVERIFY(header);
+    QVector<int> visibleColumns;
+    for (int col = 0; col < 4; ++col)
+        if (!header->isSectionHidden(col))
+            visibleColumns.append(col);
+    QCOMPARE(visibleColumns.size(), 2);
+    QCOMPARE(visibleColumns.value(0), 0);
+    QCOMPARE(visibleColumns.value(1), 3);
+    QVERIFY(!header->isSectionHidden(0));
+    QVERIFY(header->isSectionHidden(1));
+    QVERIFY(header->isSectionHidden(2));
+    QVERIFY(!header->isSectionHidden(3));
+}
+
+void MainWindowTest::returnKeysDoNotReopenVisibleMenus()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+    auto *files = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
+    auto *view = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
+    QVERIFY(files && files->menu() && view && view->menu());
+
+    const auto pressReturn = [](QToolButton *button) {
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::KeyboardModifiers());
+        QApplication::sendEvent(button, &press);
+    };
+
+    for (QToolButton *button : {files, view}) {
+        QMenu *menu = button->menu();
+        menu->close();
+        closePopups();
+        QApplication::processEvents();
+
+        QSignalSpy aboutToShow(menu, &QMenu::aboutToShow);
+        pressReturn(button);
+        QVERIFY2(menu->isVisible(), "Return não abriu o menu");
+        QCOMPARE(aboutToShow.count(), 1);
+        QList<QAction *> enabled;
+        for (QAction *a : menu->actions())
+            if (!a->isSeparator() && a->isEnabled())
+                enabled << a;
+        QVERIFY(enabled.size() >= 2);
+        QAction *chosen = enabled.last(); // não é o primeiro: popup() reinicia nele
+
+        menu->setActiveAction(chosen);
+        QCOMPARE(menu->activeAction(), chosen);
+
+        pressReturn(button);
+        QApplication::processEvents();
+        QVERIFY2(menu->isVisible(), "Return fechou o menu já visível");
+        QVERIFY2(aboutToShow.count() == 1,
+                 "Return reabriu o menu já visível (aboutToShow repetido)");
+        QVERIFY2(menu->activeAction() == chosen,
+                 "Return reiniciou a navegação do menu");
+
+        menu->close();
+        closePopups();
+        QApplication::processEvents();
+    }
+}
+
+void MainWindowTest::keyboardOpensMenusAt320InEveryPreset()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.resize(320, 600);
+    w.show();
+    QApplication::processEvents();
+
+    auto *tb = toolbar(&w);
+    QVERIFY(tb);
+    const QString nested = QDir(home).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(nested));
+    auto *initialTab = w.findChild<FileTab *>();
+    QVERIFY(initialTab);
+    QVERIFY(initialTab->goTo(nested));
+    QVERIFY(initialTab->goTo(home));
+    initialTab->back(); // deixa Voltar e Avançar habilitados para a cadeia de foco
+    QVERIFY(initialTab->canGoBack());
+    QVERIFY(initialTab->canGoForward());
+    QApplication::processEvents();
+    auto *files = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
+    auto *view = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
+    QVERIFY(files && view);
+    QCOMPARE(files->popupMode(), QToolButton::InstantPopup);
+    QCOMPARE(view->popupMode(), QToolButton::InstantPopup);
+    QVERIFY(files->menu() && view->menu());
+    QCOMPARE(files->menu()->objectName(), QStringLiteral("filesMenu"));
+    QCOMPARE(view->menu()->objectName(), QStringLiteral("viewMenu"));
+
+    auto focusName = [](QWidget *w) -> QString {
+        if (!w)
+            return QStringLiteral("(none)");
+        if (auto *button = qobject_cast<QToolButton *>(w)) {
+            const QString name = button->objectName();
+            if (name == QLatin1String("filesMenuButton"))
+                return QStringLiteral("files");
+            if (name == QLatin1String("viewMenuButton"))
+                return QStringLiteral("view");
+            if (name == QLatin1String("breadcrumbOverflow"))
+                return QStringLiteral("overflow");
+            if (name == QLatin1String("breadcrumbButton"))
+                return QStringLiteral("crumb");
+            return button->text();
+        }
+        if (qobject_cast<QListWidget *>(w))
+            return QStringLiteral("places");
+        if (qobject_cast<QTreeView *>(w))
+            return QStringLiteral("tree");
+        return QString::fromLatin1(w->metaObject()->className());
+    };
+
+    // Cadeia natural da toolbar/central widget: Arquivos entra uma vez, Voltar,
+    // Avançar e Subir vêm antes do breadcrumb e Visualização antes da lista.
+    const QStringList expected{"files", "Voltar", "Avançar", "Subir", "overflow",
+                               "view",  "places", "tree",   "crumb"};
+
+    for (const QString &preset : { QStringLiteral("Compacta"), QStringLiteral("Equilibrada"),
+                                   QStringLiteral("Avançada") }) {
+        QVERIFY(choosePreset(&w, preset));
+        w.resize(320, 600);
+        w.activateWindow();
+        QApplication::processEvents();
+
+        // Âncora única da asserção: o restante da cadeia é percorrado só com Tab.
+        files->setFocus();
+        QCOMPARE(focusName(QApplication::focusWidget()), QStringLiteral("files"));
+        QStringList seen{focusName(QApplication::focusWidget())};
+        for (int i = 0; i < expected.size() - 1; ++i) {
+            QWidget *focus = QApplication::focusWidget();
+            QTest::keyClick(focus ? focus : static_cast<QWidget *>(&w), Qt::Key_Tab);
+            seen << focusName(QApplication::focusWidget());
+        }
+        QCOMPARE(seen, expected);
+        QCOMPARE(seen.filter(QStringLiteral("files")).size(), 1);
+        // O último breadcrumb é o fim da cadeia: Tab não reinicia em Arquivos.
+        QTest::keyClick(QApplication::focusWidget(), Qt::Key_Tab);
+        QCOMPARE(focusName(QApplication::focusWidget()), QStringLiteral("crumb"));
+
+        auto reachButton = [&](QToolButton *button) {
+            for (int i = 0; i < 12; ++i) {
+                if (QApplication::focusWidget() == button)
+                    return true;
+                QWidget *focus = QApplication::focusWidget();
+                QTest::keyClick(focus ? focus : static_cast<QWidget *>(&w), Qt::Key_Tab,
+                                Qt::ShiftModifier);
+            }
+            return QApplication::focusWidget() == button;
+        };
+
+        for (QToolButton *button : {files, view}) {
+            QVERIFY2(button->isVisible(), "Botão de menu desapareceu a 320 px");
+            QVERIFY2(reachButton(button),
+                     qPrintable(QStringLiteral("%1: Tab não alcançou %2")
+                                    .arg(preset, button->objectName())));
+            QVERIFY(button->hasFocus());
+
+            for (Qt::Key key : {Qt::Key_Space, Qt::Key_Return, Qt::Key_Enter}) {
+                QVERIFY2(reachButton(button), "Foco saiu do botão antes da tecla");
+                QTest::keyClick(button, key);
+                QVERIFY2(button->menu()->isVisible(),
+                         qPrintable(QStringLiteral("%1: %2 não abriu com a tecla %3")
+                                        .arg(preset, button->objectName(), QString::number(int(key)))));
+                QWidget *popup = qApp->activePopupWidget();
+                QTest::keyClick(popup ? popup : static_cast<QWidget *>(button), Qt::Key_Escape);
+                QVERIFY2(!button->menu()->isVisible(), "Esc não fechou o menu");
+                closePopups();
+            }
+        }
+    }
+}
+
+void MainWindowTest::tabsMenuUsesFullPathForDuplicates()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString firstDir =
+        QFileInfo(QDir(root.path()).filePath(QStringLiteral("a/proj"))).absoluteFilePath();
+    const QString secondDir =
+        QFileInfo(QDir(root.path()).filePath(QStringLiteral("b/proj"))).absoluteFilePath();
+    const QString nested = QDir(firstDir).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(nested));
+    QVERIFY(QDir().mkpath(secondDir));
+    QFile file(QDir(firstDir).filePath(QStringLiteral("alvo.txt")));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write("alvo\n");
+    file.close();
+
+    MainWindow w(firstDir);
+    w.show();
+    QApplication::processEvents();
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+
+    auto *first = static_cast<FileTab *>(tabs->widget(0));
+    QVERIFY(first);
+    // Histórico primeiro; a seleção de arquivo vem depois, antes de trocar de aba.
+    QVERIFY(first->goTo(nested));
+    QVERIFY(first->goTo(firstDir)); // volta navegando: histórico fica com Voltar habilitado
+    QVERIFY(first->canGoBack());
+    QCOMPARE(first->currentPath(), firstDir);
+    auto *tree = first->findChild<QTreeView *>();
+    QVERIFY(tree);
+    const QModelIndex target = findRowNamed(tree, QStringLiteral("alvo.txt"));
+    QVERIFY(target.isValid());
+    tree->selectionModel()->setCurrentIndex(target, QItemSelectionModel::ClearAndSelect
+                                                  | QItemSelectionModel::Rows);
+    QCOMPARE(tree->selectionModel()->currentIndex().data().toString(), QStringLiteral("alvo.txt"));
+
+    QAction *newTab = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTab);
+    newTab->trigger();
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 2);
+    auto *second = static_cast<FileTab *>(tabs->widget(1));
+    QVERIFY(second);
+    QVERIFY(second->goTo(secondDir));
+    QApplication::processEvents();
+    QCOMPARE(tabs->tabText(0), tabs->tabText(1));
+
+    tabs->setCurrentIndex(0);
+    QApplication::processEvents();
+    auto *menu = w.findChild<QMenu *>(QStringLiteral("showAllTabsMenu"));
+    QVERIFY(menu);
+    auto openTabsMenu = [&]() {
+        menu->popup(QPoint(10, 10));
+        QApplication::processEvents();
+        return menu->actions();
+    };
+
+    QList<QAction *> items = openTabsMenu();
+    QCOMPARE(items.size(), 2);
+    QCOMPARE(items.at(0)->text(), firstDir);
+    QCOMPARE(items.at(1)->text(), secondDir);
+    QVERIFY(items.at(0)->isCheckable() && items.at(1)->isCheckable());
+    QVERIFY(items.at(0)->isChecked());
+    QVERIFY(!items.at(1)->isChecked());
+
+    QTest::keyClick(menu, Qt::Key_Down);
+    QCOMPARE(menu->activeAction(), items.at(0));
+    QTest::keyClick(menu, Qt::Key_Down);
+    QCOMPARE(menu->activeAction(), items.at(1));
+    QTest::keyClick(menu, Qt::Key_Up);
+    QCOMPARE(menu->activeAction(), items.at(0));
+    QTest::keyClick(menu, Qt::Key_Down);
+    QTest::keyClick(menu, Qt::Key_Return);
+    QApplication::processEvents();
+    QCOMPARE(tabs->currentIndex(), 1);
+    closePopups();
+
+    // A aba 1 guarda caminho, seleção e histórico enquanto está inativa.
+    QCOMPARE(first->currentPath(), firstDir);
+    QVERIFY(first->canGoBack());
+    QCOMPARE(tree->selectionModel()->currentIndex().data().toString(), QStringLiteral("alvo.txt"));
+
+    items = openTabsMenu();
+    QCOMPARE(items.size(), 2);
+    QVERIFY(!items.at(0)->isChecked());
+    QVERIFY(items.at(1)->isChecked());
+    QTest::keyClick(menu, Qt::Key_Down);
+    QTest::keyClick(menu, Qt::Key_Escape);
+    QApplication::processEvents();
+    QVERIFY(!menu->isVisible());
+    QCOMPARE(tabs->currentIndex(), 1);
+    closePopups();
+
+    items = openTabsMenu();
+    QCOMPARE(items.size(), 2);
+    QTest::keyClick(menu, Qt::Key_Down);
+    QTest::keyClick(menu, Qt::Key_Return);
+    QApplication::processEvents();
+    closePopups();
+
+    QCOMPARE(tabs->currentIndex(), 0);
+    QCOMPARE(first->currentPath(), firstDir);
+    QCOMPARE(tree->selectionModel()->currentIndex().data().toString(), QStringLiteral("alvo.txt"));
+    QVERIFY(findAction(&w, QStringLiteral("Voltar"))->isEnabled());
+}
+
+void MainWindowTest::localDialogsHaveReadableText()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    QVERIFY(QDir().mkpath(home));
+
+    MainWindow w(home);
+    w.show();
+    QApplication::processEvents();
+
+    auto *shortcuts = w.findChild<QAction *>(QStringLiteral("shortcutsAction"));
+    auto *help = w.findChild<QAction *>(QStringLiteral("helpAction"));
+    auto *about = w.findChild<QAction *>(QStringLiteral("aboutAction"));
+    QVERIFY(shortcuts && help && about);
+
+    auto dialogText = [](QAction *action) {
+        QString text;
+        QTimer::singleShot(0, [&] {
+            const auto topLevel = qApp->topLevelWidgets();
+            for (QWidget *widget : topLevel) {
+                if (auto *box = qobject_cast<QMessageBox *>(widget)) {
+                    text = box->text();
+                    box->done(QMessageBox::Ok);
+                    return;
+                }
+            }
+        });
+        action->trigger();
+        QApplication::processEvents();
+        closePopups();
+        return text;
+    };
+
+    const QString shortcutsText = dialogText(shortcuts);
+    QVERIFY2(shortcutsText.contains(QStringLiteral("Editar caminho")), "Ctrl+L ausente nos atalhos");
+    QVERIFY2(shortcutsText.contains(QStringLiteral("Ctrl+L")), "Ctrl+L ausente nos atalhos");
+    QVERIFY2(shortcutsText.contains(QStringLiteral("Fechar aba")), "Ctrl+W ausente nos atalhos");
+    QVERIFY2(shortcutsText.contains(QStringLiteral("Ctrl+W")), "Ctrl+W ausente nos atalhos");
+    QVERIFY2(!dialogText(help).isEmpty(), "Ajuda sem texto");
+    QVERIFY2(!dialogText(about).isEmpty(), "Sobre o fm sem texto");
+}
+
+void MainWindowTest::sortIsPerTabAndSurvivesRefresh()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString dir1 = QDir(root.path()).filePath(QStringLiteral("um"));
+    const QString dir2 = QDir(root.path()).filePath(QStringLiteral("dois"));
+    QVERIFY(QDir().mkpath(dir1));
+    QVERIFY(QDir().mkpath(dir2));
+
+    const QStringList aba1Base{QStringLiteral("a1.txt"), QStringLiteral("b1.txt"),
+                               QStringLiteral("c1.txt")};
+    const QStringList aba2Base{QStringLiteral("a2.txt"), QStringLiteral("b2.txt"),
+                               QStringLiteral("c2.txt")};
+    const auto writeFile = [](const QString &path, const QString &name) {
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
+        file.write(name.toUtf8());
+        file.close();
+        return true;
+    };
+    for (const QString &name : aba1Base)
+        QVERIFY(writeFile(QDir(dir1).filePath(name), name));
+    for (const QString &name : aba2Base)
+        QVERIFY(writeFile(QDir(dir2).filePath(name), name));
+
+    MainWindow w(dir1);
+    w.show();
+    QApplication::processEvents();
+
+    auto *tabs = w.findChild<QTabWidget *>();
+    QVERIFY(tabs);
+    auto *tab1 = static_cast<FileTab *>(tabs->widget(0));
+    QVERIFY(tab1);
+    QAction *newTab = findAction(&w, QStringLiteral("Nova aba"));
+    QVERIFY(newTab);
+    newTab->trigger();
+    QApplication::processEvents();
+    QCOMPARE(tabs->count(), 2);
+    auto *tab2 = static_cast<FileTab *>(tabs->widget(1));
+    QVERIFY(tab2 && tab2->goTo(dir2));
+    QApplication::processEvents();
+
+    struct SortSpec {
+        const char *objectName;
+        const char *text;
+        QAction *action;
+    };
+    SortSpec specs[]{
+        {"sortNameAsc", "Nome (A–Z)", nullptr},
+        {"sortNameDesc", "Nome (Z–A)", nullptr},
+        {"sortDateNewest", "Modificação (mais recente)", nullptr},
+        {"sortDateOldest", "Modificação (mais antiga)", nullptr},
+        {"sortSizeDesc", "Tamanho (maior)", nullptr},
+        {"sortSizeAsc", "Tamanho (menor)", nullptr},
+        {"sortTypeAsc", "Tipo (A–Z)", nullptr},
+        {"sortTypeDesc", "Tipo (Z–A)", nullptr},
+    };
+    for (SortSpec &spec : specs) {
+        spec.action = w.findChild<QAction *>(QString::fromUtf8(spec.objectName));
+        QVERIFY2(spec.action,
+                 qPrintable(QStringLiteral("ação de ordenação ausente: ")
+                            + QString::fromUtf8(spec.objectName)));
+        QCOMPARE(spec.action->text(), QString::fromUtf8(spec.text));
+        QVERIFY(spec.action->isCheckable());
+        QVERIFY(spec.action->shortcut().isEmpty());
+        QVERIFY(spec.action->actionGroup());
+        QVERIFY(spec.action->actionGroup()->isExclusive());
+        QCOMPARE(spec.action->actionGroup(), specs[0].action->actionGroup());
+    }
+    const auto checkedSortCount = [&specs] {
+        int count = 0;
+        for (const SortSpec &spec : specs)
+            if (spec.action->isChecked())
+                ++count;
+        return count;
+    };
+    const QStringList sortLabels{QStringLiteral("---"),
+                                 QString::fromUtf8(specs[0].text),
+                                 QString::fromUtf8(specs[1].text),
+                                 QString::fromUtf8(specs[2].text),
+                                 QString::fromUtf8(specs[3].text),
+                                 QString::fromUtf8(specs[4].text),
+                                 QString::fromUtf8(specs[5].text),
+                                 QString::fromUtf8(specs[6].text),
+                                 QString::fromUtf8(specs[7].text)};
+    auto *viewMenu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    QVERIFY(viewMenu);
+    const QStringList labels = viewMenuLabels(viewMenu);
+    QCOMPARE(labels.mid(2, sortLabels.size()), sortLabels);
+    QCOMPARE(labels.value(2 + sortLabels.size()), QStringLiteral("---"));
+
+    QAction *nameAsc = specs[0].action;
+    QAction *nameDesc = specs[1].action;
+    QAction *list = w.findChild<QAction *>(QStringLiteral("listViewAction"));
+    QAction *grid = w.findChild<QAction *>(QStringLiteral("gridViewAction"));
+    QVERIFY(list && grid);
+
+    auto *tree1 = tab1->findChild<QTreeView *>();
+    auto *tree2 = tab2->findChild<QTreeView *>();
+    QListView *icons1 = iconViewOf(tab1);
+    QListView *icons2 = iconViewOf(tab2);
+    QVERIFY(tree1 && tree2 && icons1 && icons2);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1).size() == aba1Base.size(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(icons1).size() == aba1Base.size(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree2).size() == aba2Base.size(), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(icons2).size() == aba2Base.size(), 3000);
+
+    const QStringList aba1Desc{QStringLiteral("c1.txt"), QStringLiteral("b1.txt"),
+                               QStringLiteral("a1.txt")};
+    const auto checkBothViews = [](QTreeView *tree, QListView *icons, const QStringList &expected) {
+        QCOMPARE(viewItemNames(tree), expected);
+        QCOMPARE(viewItemNames(icons), expected);
+    };
+
+    tabs->setCurrentIndex(0); // a nova aba fica ativa ao ser criada
+    QApplication::processEvents();
+
+    // Padrão: coluna 0, ascendente, com a marcação correspondente na aba ativa.
+    QCOMPARE(tab1->sortColumn(), 0);
+    QCOMPARE(tab1->sortOrder(), Qt::AscendingOrder);
+    QVERIFY(nameAsc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+    checkBothViews(tree1, icons1, aba1Base);
+
+    nameDesc->trigger();
+    QCOMPARE(tab1->sortColumn(), 0);
+    QCOMPARE(tab1->sortOrder(), Qt::DescendingOrder);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1Desc, 3000);
+    checkBothViews(tree1, icons1, aba1Desc);
+    QVERIFY(nameDesc->isChecked() && !nameAsc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+
+    // A aba 2 mantém a própria ordem e a própria marcação.
+    tabs->setCurrentIndex(1);
+    QApplication::processEvents();
+    QCOMPARE(tab2->sortColumn(), 0);
+    QCOMPARE(tab2->sortOrder(), Qt::AscendingOrder);
+    QVERIFY(nameAsc->isChecked() && !nameDesc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+    checkBothViews(tree2, icons2, aba2Base);
+    checkBothViews(tree1, icons1, aba1Desc);
+
+    grid->trigger();
+    QApplication::processEvents();
+    QVERIFY(usesIconMode(tab2));
+    checkBothViews(tree2, icons2, aba2Base);
+
+    // Atualizar precisa mudar a sequência observada: z2.txt entra na lista.
+    list->trigger();
+    QApplication::processEvents();
+    QVERIFY(!usesIconMode(tab2));
+    const QStringList aba2ComZ{QStringLiteral("a2.txt"), QStringLiteral("b2.txt"),
+                               QStringLiteral("c2.txt"), QStringLiteral("z2.txt")};
+    QVERIFY(writeFile(QDir(dir2).filePath(QStringLiteral("z2.txt")), QStringLiteral("z2.txt")));
+    QAbstractItemModel *beforeRefresh = tree2->model();
+    QVERIFY(triggerRefreshAction(tab2));
+    QVERIFY2(tree2->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree2) == aba2ComZ, 3000);
+    checkBothViews(tree2, icons2, aba2ComZ);
+    QVERIFY(nameAsc->isChecked());
+    QVERIFY(QFile::remove(QDir(dir2).filePath(QStringLiteral("z2.txt"))));
+    beforeRefresh = tree2->model();
+    QVERIFY(triggerRefreshAction(tab2));
+    QVERIFY2(tree2->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree2) == aba2Base, 3000);
+    checkBothViews(tree2, icons2, aba2Base);
+
+    // Voltar à aba 1 recupera desc e alterna Lista/Grade sem perder a ordem.
+    tabs->setCurrentIndex(0);
+    QApplication::processEvents();
+    QVERIFY(nameDesc->isChecked() && !nameAsc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+    checkBothViews(tree1, icons1, aba1Desc);
+    checkBothViews(tree2, icons2, aba2Base);
+    grid->trigger();
+    QApplication::processEvents();
+    QVERIFY(usesIconMode(tab1));
+    checkBothViews(tree1, icons1, aba1Desc);
+    list->trigger();
+    QApplication::processEvents();
+    QVERIFY(!usesIconMode(tab1));
+    checkBothViews(tree1, icons1, aba1Desc);
+
+    const QStringList aba1DescComZ{QStringLiteral("z1.txt"), QStringLiteral("c1.txt"),
+                                   QStringLiteral("b1.txt"), QStringLiteral("a1.txt")};
+    QVERIFY(writeFile(QDir(dir1).filePath(QStringLiteral("z1.txt")), QStringLiteral("z1.txt")));
+    beforeRefresh = tree1->model();
+    QVERIFY(triggerRefreshAction(tab1));
+    QVERIFY2(tree1->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1DescComZ, 3000);
+    checkBothViews(tree1, icons1, aba1DescComZ);
+    QVERIFY(nameDesc->isChecked());
+    QVERIFY(QFile::remove(QDir(dir1).filePath(QStringLiteral("z1.txt"))));
+    beforeRefresh = tree1->model();
+    QVERIFY(triggerRefreshAction(tab1));
+    QVERIFY2(tree1->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1Desc, 3000);
+    checkBothViews(tree1, icons1, aba1Desc);
+
+    // Clique no cabeçalho da coluna 0 inverte para ascendente e synca o menu.
+    QHeaderView *header = tree1->header();
+    QVERIFY(header);
+    const QPoint headerPoint(header->sectionPosition(0) + header->sectionSize(0) / 2,
+                             header->viewport()->height() / 2);
+    QTest::mouseClick(header->viewport(), Qt::LeftButton, Qt::KeyboardModifiers(), headerPoint);
+    QApplication::processEvents();
+    QCOMPARE(tab1->sortColumn(), 0);
+    QCOMPARE(tab1->sortOrder(), Qt::AscendingOrder);
+    QVERIFY(nameAsc->isChecked() && !nameDesc->isChecked());
+    QCOMPARE(checkedSortCount(), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(viewItemNames(tree1) == aba1Base, 3000);
+    checkBothViews(tree1, icons1, aba1Base);
+    checkBothViews(tree2, icons2, aba2Base);
+}
+
+void MainWindowTest::paletteChangeKeepsMenusAndFocusReadable()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    const QString nested = QDir(home).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(nested));
+    const QString palettePath = QDir(root.path()).filePath(QStringLiteral("palette.json"));
+    QVERIFY(writePaletteFile(palettePath, QStringLiteral("#112233"),
+                             QStringLiteral("#445566")));
+
+    const QPalette originalPalette = qApp->palette();
+    const QString originalStyle = qApp->styleSheet();
+    const auto restore = qScopeGuard([&originalPalette, &originalStyle] {
+        qApp->setPalette(originalPalette);
+        qApp->setStyleSheet(originalStyle);
+    });
+
+    ThemeManager theme;
+    theme.setThemeFile(palettePath); // troca explícita: cobertura de regressão
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+
+    MainWindow w(home);
+    w.resize(320, 600);
+    w.show();
+    QApplication::processEvents();
+
+    auto *tab = w.findChild<FileTab *>();
+    QVERIFY(tab && tab->goTo(nested) && tab->goTo(home));
+    tab->back(); // habilita Voltar/Avançar, como na cadeia de foco existente
+    QVERIFY(tab->canGoBack() && tab->canGoForward());
+    auto *filesButton = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
+    auto *viewButton = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
+    auto *filesMenu = w.findChild<QMenu *>(QStringLiteral("filesMenu"));
+    auto *viewMenu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    auto *sort = w.findChild<QAction *>(QStringLiteral("sortSizeDesc"));
+    auto *legend = w.findChild<QAction *>(QStringLiteral("gridSizeAction"));
+    QVERIFY(filesButton && viewButton && filesMenu && viewMenu && sort && legend);
+
+    viewButton->setFocus();
+    viewMenu->popup(viewButton->mapToGlobal(QPoint(0, viewButton->height())));
+    QVERIFY(viewMenu->isVisible());
+    QVERIFY(menuHasNoEmptyActionText(filesMenu));
+    QVERIFY(menuHasNoEmptyActionText(viewMenu));
+    QVERIFY(menuActionsAreEnabled(filesMenu));
+    QVERIFY(menuActionsAreEnabled(viewMenu));
+
+    sort->trigger();
+    legend->trigger();
+    QVERIFY(sort->isChecked() && legend->isChecked());
+    QVERIFY(viewMenu->isVisible());
+
+    // Troca de tema com setThemeFile(): não é a recarga ao vivo.
+    QVERIFY(writePaletteFile(palettePath, QStringLiteral("#abcdef"),
+                             QStringLiteral("#778899")));
+    theme.setThemeFile(palettePath);
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#abcdef")));
+
+    QVERIFY(sort->isChecked() && legend->isChecked());
+    QVERIFY(menuHasNoEmptyActionText(filesMenu));
+    QVERIFY(menuHasNoEmptyActionText(viewMenu));
+    QVERIFY(menuActionsAreEnabled(filesMenu));
+    QVERIFY(menuActionsAreEnabled(viewMenu));
+    QVERIFY(viewMenu->isVisible());
+
+    QWidget *popup = qApp->activePopupWidget();
+    QTest::keyClick(popup ? popup : static_cast<QWidget *>(&w), Qt::Key_Escape);
+    closePopups();
+    filesButton->setFocus();
+    QVERIFY2(tabReachesButton(&w, viewButton), "Tab não alcançou Visualização após trocar paleta");
+    QVERIFY(viewButton->hasFocus());
+    QVERIFY(viewButton->isVisible() && (viewButton->focusPolicy() & Qt::TabFocus));
+    QVERIFY2(tabReachesButton(&w, filesButton, Qt::ShiftModifier),
+             "Shift+Tab não alcançou Arquivos após trocar paleta");
+    QVERIFY(filesButton->hasFocus());
+    QVERIFY(filesButton->isVisible() && (filesButton->focusPolicy() & Qt::TabFocus));
+}
+
+void MainWindowTest::liveThemeReloadKeepsOpenMenuState()
+{
+    TempConfig config;
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const QString home = QDir(root.path()).filePath(QStringLiteral("home"));
+    const QString nested = QDir(home).filePath(QStringLiteral("sub"));
+    QVERIFY(QDir().mkpath(nested));
+    const QString palettePath = QDir(root.path()).filePath(QStringLiteral("palette.json"));
+    // palette-A.json: escrito no caminho que o ThemeManager passa a observar.
+    QVERIFY(writePaletteFile(palettePath, QStringLiteral("#112233"),
+                             QStringLiteral("#445566")));
+
+    const QPalette originalPalette = qApp->palette();
+    const QString originalStyle = qApp->styleSheet();
+    const auto restore = qScopeGuard([&originalPalette, &originalStyle] {
+        qApp->setPalette(originalPalette);
+        qApp->setStyleSheet(originalStyle);
+    });
+
+    ThemeManager theme;
+    theme.setThemeFile(palettePath); // uma única vez: inicia o watcher
+    QCOMPARE(qApp->palette().color(QPalette::Window), QColor(QStringLiteral("#112233")));
+
+    MainWindow w(home);
+    w.resize(320, 600);
+    w.show();
+    QApplication::processEvents();
+    auto *tab = w.findChild<FileTab *>();
+    QVERIFY(tab && tab->goTo(nested) && tab->goTo(home));
+    tab->back();
+    QVERIFY(tab->canGoBack() && tab->canGoForward());
+
+    auto *filesButton = w.findChild<QToolButton *>(QStringLiteral("filesMenuButton"));
+    auto *viewButton = w.findChild<QToolButton *>(QStringLiteral("viewMenuButton"));
+    auto *viewMenu = w.findChild<QMenu *>(QStringLiteral("viewMenu"));
+    auto *sort = w.findChild<QAction *>(QStringLiteral("sortDateNewest"));
+    auto *legend = w.findChild<QAction *>(QStringLiteral("gridDateAction"));
+    QVERIFY(filesButton && viewButton && viewMenu && sort && legend);
+
+    sort->trigger();
+    legend->trigger();
+    QVERIFY(sort->isChecked() && legend->isChecked());
+    viewButton->setFocus();
+    viewMenu->popup(viewButton->mapToGlobal(QPoint(0, viewButton->height())));
+    QVERIFY(viewMenu->isVisible());
+
+    // palette-B.json: mesmo caminho, sem segundo setThemeFile().
+    QVERIFY(writePaletteFile(palettePath, QStringLiteral("#abcdef"),
+                             QStringLiteral("#778899")));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        qApp->palette().color(QPalette::Window) == QColor(QStringLiteral("#abcdef")), 3000);
+    QVERIFY(sort->isChecked() && legend->isChecked());
+    QVERIFY(menuHasNoEmptyActionText(viewMenu));
+    QVERIFY(menuActionsAreEnabled(viewMenu));
+    QVERIFY(viewMenu->isVisible());
+
+    // O popup tem o teclado enquanto está aberto; a cadeia de foco é conferida
+    // depois de fechá-lo, com o menu ainda aberto tendo sobrevivido ao reload.
+    QWidget *popup = qApp->activePopupWidget();
+    QTest::keyClick(popup ? popup : static_cast<QWidget *>(&w), Qt::Key_Escape);
+    closePopups();
+    filesButton->setFocus();
+    QVERIFY2(tabReachesButton(&w, viewButton), "Tab não alcançou Visualização após reload ao vivo");
+    QVERIFY(viewButton->hasFocus());
+    QVERIFY(viewButton->isVisible() && (viewButton->focusPolicy() & Qt::TabFocus));
 }
 
 QTEST_MAIN(MainWindowTest)

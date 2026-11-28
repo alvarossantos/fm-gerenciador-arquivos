@@ -5,18 +5,24 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QColor>
 #include <QDir>
+#include <QEvent>
 #include <QFileSystemModel>
 #include <QHash>
 #include <QHeaderView>
 #include <QImage>
 #include <QItemSelectionModel>
 #include <QElapsedTimer>
+#include <QFontMetrics>
 #include <QInputDialog>
 #include <QLineEdit>
 #include <QListView>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPalette>
+#include <QPixmap>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -24,7 +30,9 @@
 #include <QMenu>
 #include <QPointer>
 #include <QSignalSpy>
+#include <QStyle>
 #include <QStyleOptionViewItem>
+#include <QStyledItemDelegate>
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QTreeView>
@@ -49,6 +57,19 @@ auto setTestEnv(const char *name, const QByteArray &value)
             qunsetenv(name);
     });
 }
+
+// Conta pedidos de repaint no viewport (update() e o Paint resultante).
+class RepaintCounter : public QObject
+{
+public:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::UpdateRequest || event->type() == QEvent::Paint)
+            ++count;
+        return QObject::eventFilter(watched, event);
+    }
+    int count = 0;
+};
 
 QAction *actionNamed(QMenu *menu, const QString &text)
 {
@@ -170,6 +191,30 @@ void openContextMenu(QAbstractItemView *view, const QModelIndex &index = QModelI
     const QPoint vp = index.isValid() ? view->visualRect(index.siblingAtColumn(column)).center() : QPoint(5, 400);
     QContextMenuEvent ev(QContextMenuEvent::Mouse, vp, view->viewport()->mapToGlobal(vp));
     QApplication::sendEvent(view->viewport(), &ev);
+}
+
+// Dispara a ação do menu de contexto identificada por objectName, sem depender do rótulo.
+bool triggerActionByObjectName(QAbstractItemView *view, const QString &objectName)
+{
+    bool found = false;
+    setContextMenuHookForTests([&found, objectName](QMenu *menu, const QStringList &) {
+        for (QAction *a : menu->actions()) {
+            if (a->objectName() != objectName)
+                continue;
+            found = true;
+            const QPointer<QAction> action = a;
+            QTimer::singleShot(0, [action] {
+                if (action)
+                    action->trigger();
+                closePopups();
+            });
+            return;
+        }
+        QTimer::singleShot(0, [] { closePopups(); });
+    });
+    const auto reset = qScopeGuard([] { setContextMenuHookForTests({}); });
+    openContextMenu(view);
+    return found;
 }
 
 
@@ -358,6 +403,8 @@ private slots:
     void missingTerminalReportsStatus();
     void propertiesOfCurrentFolder();
     void refreshRereadsWithoutWatcherAndKeepsHistory();
+    void sortSurvivesRefreshInBothViews();
+    void sortRejectsInvalidColumnsWithoutChangingState();
     void mimeHookResetRestoresAsyncQueries();
     void extractionFailureDoesNotPublishFolder();
     void extractionCancelRemovesTemporaryFolder();
@@ -372,6 +419,9 @@ private slots:
     void closingTabKeepsScratchWhenProcessDoesNotStop();
     void zoomChangesIconAndGridSize();
     void zoomClampsAndSurvivesModeSwitch();
+    void gridLegendsReserveCellHeightAtBothZooms();
+    void gridLegendSelectedRowUsesHighlightBackground();
+    void gridLegendToggleWithoutHeightChangeRequestsRepaint();
     void viewRefinementsAreApplied();
     void zoomResetRestoresInitialSizes();
     void sizeColumnCellsAreRightAligned();
@@ -1848,6 +1898,193 @@ void FileTabTest::refreshRereadsWithoutWatcherAndKeepsHistory()
     QVERIFY(tab.canGoBack());
 }
 
+void FileTabTest::sortSurvivesRefreshInBothViews()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    for (const QString &name : { QStringLiteral("a.txt"), QStringLiteral("b.txt"),
+                                 QStringLiteral("c.txt") }) {
+        QFile f(QDir(dir.path()).filePath(name));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(name.toUtf8());
+    }
+
+    FileTab tab(dir.path());
+    QSignalSpy spy(&tab, &FileTab::sortChanged);
+
+    auto *tree = tab.findChild<QTreeView *>();
+    QVERIFY(tree);
+    QListView *icons = nullptr;
+    for (QListView *candidate : tab.findChildren<QListView *>())
+        if (candidate->viewMode() == QListView::IconMode) { icons = candidate; break; }
+    QVERIFY(icons);
+
+    // Cada visão é lida por conta própria e comparada com o literal: as duas
+    // compartilham o modelo, então compará-las entre si não provaria nada.
+    const auto rowNames = [](QAbstractItemView *view) {
+        QStringList out;
+        QAbstractItemModel *m = view->model();
+        const QModelIndex root = view->rootIndex();
+        for (int r = 0; r < m->rowCount(root); ++r)
+            out << m->data(m->index(r, 0, root), Qt::DisplayRole).toString();
+        return out;
+    };
+    auto treeOrder = [rowNames, tree] { return rowNames(tree); };
+    auto iconOrder = [rowNames, icons] { return rowNames(icons); };
+
+    QTRY_VERIFY_WITH_TIMEOUT(treeOrder().size() == 3, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(iconOrder().size() == 3, 3000);
+
+    const QStringList asc { QStringLiteral("a.txt"), QStringLiteral("b.txt"), QStringLiteral("c.txt") };
+    const QStringList desc { QStringLiteral("c.txt"), QStringLiteral("b.txt"), QStringLiteral("a.txt") };
+
+    tab.setSort(0, Qt::AscendingOrder);
+    QCOMPARE(tab.sortColumn(), 0);
+    QCOMPARE(tab.sortOrder(), Qt::AscendingOrder);
+    QCOMPARE(treeOrder(), asc);
+    QCOMPARE(iconOrder(), asc);
+
+    tab.setSort(0, Qt::DescendingOrder);
+    QCOMPARE(tab.sortColumn(), 0);
+    QCOMPARE(tab.sortOrder(), Qt::DescendingOrder);
+    QCOMPARE(treeOrder(), desc);
+    QCOMPARE(iconOrder(), desc);
+
+    QAbstractItemModel *beforeRefresh = tree->model();
+    QVERIFY(triggerActionByObjectName(tree, QStringLiteral("refreshAction")));
+    QVERIFY2(tree->model() != beforeRefresh,
+             "Atualizar não trocou o modelo: a lista pode ter mudado pelo watcher");
+    QTRY_VERIFY_WITH_TIMEOUT(treeOrder().size() == 3, 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(iconOrder().size() == 3, 3000);
+    QCOMPARE(treeOrder(), desc);
+    QCOMPARE(iconOrder(), desc);
+
+    QCOMPARE(spy.count(), 2);
+    QCOMPARE(spy.at(0).at(0).toInt(), 0);
+    QCOMPARE(spy.at(0).at(1).value<Qt::SortOrder>(), Qt::AscendingOrder);
+    QCOMPARE(spy.at(1).at(0).toInt(), 0);
+    QCOMPARE(spy.at(1).at(1).value<Qt::SortOrder>(), Qt::DescendingOrder);
+}
+
+void FileTabTest::gridLegendSelectedRowUsesHighlightBackground()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QFile f(QDir(dir.path()).filePath(QStringLiteral("legenda.txt")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("1234567890");
+    }
+
+    FileTab tab(dir.path());
+    tab.setGridLegends(true, false);
+
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+    QTRY_VERIFY_WITH_TIMEOUT(icons->model()->rowCount(icons->rootIndex()) > 0, 3000);
+    const QModelIndex index = icons->model()->index(0, 0, icons->rootIndex());
+    QVERIFY(index.isValid());
+    QVERIFY(!index.siblingAtColumn(1).data(Qt::DisplayRole).toString().isEmpty());
+
+    QAbstractItemDelegate *delegate = icons->itemDelegate();
+    QVERIFY(delegate);
+
+    QStyleOptionViewItem option;
+    option.initFrom(icons);
+    QPalette light = option.palette;
+    const QColor highlight(20, 60, 120);
+    light.setColor(QPalette::Window, QColor(Qt::white));
+    light.setColor(QPalette::Base, QColor(Qt::white));
+    light.setColor(QPalette::Text, QColor(Qt::black));
+    light.setColor(QPalette::Highlight, highlight);
+    light.setColor(QPalette::HighlightedText, QColor(Qt::white));
+    option.palette = light;
+    option.state |= QStyle::State_Selected;
+    option.rect = QRect(0, 0, 320, 80);
+
+    QPixmap shot(option.rect.size());
+    shot.fill(QColor(Qt::white));
+    QPainter painter(&shot);
+    delegate->paint(&painter, option, index);
+    painter.end();
+
+    const QImage image = shot.toImage();
+    const int legendTop = option.rect.bottom() + 1 - QFontMetrics(option.font).height();
+    const QColor background = image.pixelColor(4, legendTop + 2);
+    const auto distance = [](const QColor &a, const QColor &b) {
+        return qAbs(a.red() - b.red()) + qAbs(a.green() - b.green())
+               + qAbs(a.blue() - b.blue());
+    };
+    QVERIFY2(distance(background, highlight) < 40,
+             qPrintable(QStringLiteral("fundo da legenda: %1, esperado Highlight %2")
+                            .arg(background.name(), highlight.name())));
+    QVERIFY2(distance(background, light.color(QPalette::HighlightedText)) > 60,
+             qPrintable(QStringLiteral("fundo da legenda %1 confunde com HighlightedText")
+                            .arg(background.name())));
+}
+
+void FileTabTest::gridLegendToggleWithoutHeightChangeRequestsRepaint()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    {
+        QFile f(QDir(dir.path()).filePath(QStringLiteral("legenda.txt")));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+    }
+
+    FileTab tab(dir.path());
+    tab.setGridLegends(true, false);
+    tab.setIconMode(true);
+    tab.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&tab));
+
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+    QTRY_VERIFY_WITH_TIMEOUT(icons->model()->rowCount(icons->rootIndex()) > 0, 3000);
+    QVERIFY(tab.gridSize() && !tab.gridDate());
+    const int gridHeight = icons->gridSize().height();
+    QVERIFY(gridHeight > 0);
+
+    RepaintCounter counter;
+    icons->viewport()->installEventFilter(&counter);
+    const auto removeFilter = qScopeGuard([&] { icons->viewport()->removeEventFilter(&counter); });
+    QApplication::processEvents();
+    counter.count = 0;
+
+    tab.setGridLegends(false, true);
+    QVERIFY(!tab.gridSize() && tab.gridDate());
+    QCOMPARE(icons->gridSize().height(), gridHeight); // mesma altura: setGridSize não muda nada
+    QApplication::processEvents();
+    QVERIFY2(counter.count > 0,
+             "trocar tamanho por data sem mudar a altura não gerou repaint da legenda");
+}
+
+void FileTabTest::sortRejectsInvalidColumnsWithoutChangingState()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    FileTab tab(dir.path());
+    QSignalSpy spy(&tab, &FileTab::sortChanged);
+
+    for (int column : {-1, 4}) {
+        tab.setSort(column, Qt::DescendingOrder);
+        QCOMPARE(tab.sortColumn(), 0);
+        QCOMPARE(tab.sortOrder(), Qt::AscendingOrder);
+        QCOMPARE(spy.count(), 0);
+    }
+
+    tab.setSort(3, Qt::DescendingOrder);
+    QCOMPARE(tab.sortColumn(), 3);
+    QCOMPARE(spy.count(), 1);
+}
+
 void FileTabTest::mimeHookResetRestoresAsyncQueries()
 {
     QTemporaryDir dir;
@@ -2395,6 +2632,60 @@ void FileTabTest::zoomClampsAndSurvivesModeSwitch()
     tab.setIconMode(false);
     tab.setIconMode(true);
     QCOMPARE(tab.zoom(), 150);
+}
+
+void FileTabTest::gridLegendsReserveCellHeightAtBothZooms()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString name = QStringLiteral(
+        "nome-muito-longo-para-testar-legendas-de-tamanho-e-data.txt");
+    {
+        QFile f(QDir(dir.path()).filePath(name));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.close();
+    }
+
+    FileTab tab(dir.path());
+    QVERIFY(!tab.gridSize());
+    QVERIFY(!tab.gridDate());
+
+    QListView *icons = nullptr;
+    for (QListView *view : tab.findChildren<QListView *>())
+        if (view->viewMode() == QListView::IconMode)
+            icons = view;
+    QVERIFY(icons);
+    QTRY_VERIFY_WITH_TIMEOUT(icons->model()->rowCount(icons->rootIndex()) > 0, 3000);
+    const QModelIndex index = icons->model()->index(0, 0, icons->rootIndex());
+    QVERIFY(index.isValid());
+    QCOMPARE(index.data(Qt::DisplayRole).toString(), name);
+
+    QStyleOptionViewItem option;
+    option.initFrom(icons);
+    QStyledItemDelegate baseDelegate;
+    const int baseHeight = baseDelegate.sizeHint(option, index).height();
+    const int lineHeight = QFontMetrics(option.font).height();
+    QVERIFY2(lineHeight > 0, "altura de linha inválida");
+
+    tab.setGridLegends(true, true);
+    QVERIFY(tab.gridSize());
+    QVERIFY(tab.gridDate());
+    QAbstractItemDelegate *delegate = icons->itemDelegate();
+    QVERIFY(delegate);
+
+    for (int zoom : {50, 200}) {
+        tab.setZoom(zoom);
+        QCOMPARE(tab.zoom(), zoom);
+        const int hint = delegate->sizeHint(option, index).height();
+        QVERIFY2(hint >= baseHeight + 2 * lineHeight,
+                 qPrintable(QStringLiteral("zoom %1: sizeHint %2, base %3, linha %4")
+                                .arg(zoom).arg(hint).arg(baseHeight).arg(lineHeight)));
+        QVERIFY2(icons->gridSize().height() >= hint,
+                 qPrintable(QStringLiteral("zoom %1: célula %2 < delegate %3")
+                                .arg(zoom).arg(icons->gridSize().height()).arg(hint)));
+        const int iconSide = 72 * zoom / 100;
+        QCOMPARE(icons->iconSize(), QSize(iconSide, iconSide));
+    }
 }
 
 void FileTabTest::viewRefinementsAreApplied()
