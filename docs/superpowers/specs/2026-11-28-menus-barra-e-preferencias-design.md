@@ -76,7 +76,11 @@ por índice de aba quebra ao fechar ou mover abas.
 - Inserir `filesMenuButton` (`objectName="filesMenuButton"`) antes de `m_back` e
   `viewMenuButton` (`objectName="viewMenuButton"`) junto do par
   Lista/Grade, no lado direito. Ambos usam `QToolButton::InstantPopup`, não
-  ganham atalho próprio e permanecem na toolbar mesmo a 320 px.
+  ganham atalho próprio e permanecem na toolbar mesmo a 320 px. Decisão do
+  autor do spec: em largura normal mostram os rótulos `Arquivos` e
+  `Visualização`; abaixo de 720 px (o mesmo limite de `syncToolbarActions()`)
+  viram botões de ícone com `toolTip` e `accessibleName` com o rótulo completo.
+  Os testes procuram pelos `objectName`s, não pelo texto visível.
 - `syncToolbarActions()` continua recolhendo apenas controles secundários; os
   dois menus nunca entram na lista `rules[]` e nunca são destruídos. Assim a
   largura do breadcrumb é afetada só pelos dois botões, de tamanho fixo.
@@ -85,8 +89,11 @@ por índice de aba quebra ao fechar ou mover abas.
   `Nova aba` (`m_newTabAct` existente), separador, `Mostrar todas as abas`,
   separador, `Preferências…` (chama `openCustomizeDialog()`), separador,
   `Atalhos de teclado`, `Ajuda` e `Sobre o fm`. Os três últimos usam
-  `QMessageBox` com o texto já existente no projeto/atalhos das ações; nenhuma
-  janela nova é introduzida.
+  `QMessageBox`, sem classe nova. Decisão do autor do spec: `Atalhos de teclado`
+  é gerado a partir das `QAction`s da janela (texto + `shortcut().toString()`),
+  incluindo `Ctrl+L`/`Ctrl+W`; `Ajuda` traz um texto curto sobre navegação,
+  abas, `Ctrl+L` e menus; `Sobre o fm` exibe nome, versão de Qt em uso e uma
+  linha de descrição. Nenhum conteúdo externo é buscado em runtime.
 - `Mostrar todas as abas` cria as ações em `aboutToShow`, na ordem exata do
   `QTabWidget`. Cada ação é checável; a ativa vem marcada. Quando duas abas têm
   o mesmo `tabText`, o rótulo passa a ser o caminho completo da aba. Escolher
@@ -131,11 +138,13 @@ por índice de aba quebra ao fechar ou mover abas.
 ### Colunas individuais (`UiPreferences` + `MainWindow`)
 
 - `normalizeColumns()` em `UiPreferences.cpp` substitui `validColumn()` na
-  leitura: remove duplicatas, ordena, aceita somente `0..3` e garante `0`
-  (`Nome`). Lista vazia, valor fora do intervalo ou ausência de `Nome` caem no
-  default do preset — mesma política de JSON de tema inválido. Listas antigas
-  já persistidas (`{"0"}`, `{"0","1","2","3"}`) continuam válidas, sem
-  migração.
+  leitura: filtra índices fora de `0..3`, remove duplicatas, ordena e insere
+  `0` (`Nome`) quando ausente. O resultado é gravado já normalizado; uma lista
+  vazia depois do filtro cai no default do preset — mesma política de JSON de
+  tema inválido. Decisão do autor do spec: **sanitizar**, não rejeitar a
+  preferência inteira, para que um valor corrompido como `{"0","0","9"}`
+  vire `{"0"}` sem perder os ajustes vizinhos. Listas antigas já persistidas
+  (`{"0"}`, `{"0","1","2","3"}`) continuam válidas, sem migração.
 - `openCustomizeDialog()` troca `customColumns` (`QComboBox`) por quatro
   `QCheckBox`: `customColumn0` (`Nome`, `setEnabled(false)`, sempre checado),
   `customColumn1` (`Tamanho`), `customColumn2` (`Tipo`) e `customColumn3`
@@ -153,7 +162,11 @@ por índice de aba quebra ao fechar ou mover abas.
 - `FileTab::setGridLegends(bool size, bool date)` instala um
   `GridLegendDelegate` no `QListView`, que desenha o nome e, abaixo dele, o
   tamanho (`QFileSystemModel` coluna 1) e/ou a data de modificação (coluna 3)
-  obtidos pelo proxy. Nenhuma biblioteca nova.
+  obtidos pelo proxy. Nenhuma biblioteca nova. Decisão do autor do spec: o
+  `sizeHint()` cresce uma linha de `QFontMetrics::height()` por legenda ativa;
+  `iconSize` e zoom continuam controlando apenas o ícone, sem realimentar a
+  altura da célula. Assim as legendas nunca são cortadas e os testes de zoom
+  atuais permanecem válidos.
 - As duas ações do menu `Visualização` são checáveis e persistem a mudança
   imediatamente, como `ui/preview`. Um getter em `FileTab` expõe o estado para
   testes.
@@ -182,8 +195,9 @@ por índice de aba quebra ao fechar ou mover abas.
 - `mainwindow_test`: salvar `Nome + Modificação`, reabrir o diálogo com as
   caixas corretas, reiniciar `MainWindow` e conferir a preferência e as colunas
   visíveis.
-- `uipreferences_test`: `normalizeColumns()` rejeita lista vazia, duplicata,
-  índice inválido e lista sem `Nome`; round-trip com as novas chaves de grade.
+- `uipreferences_test`: `normalizeColumns()` transforma `{"0","0","9"}` em
+  `{"0"}`, `{"1","2"}` em `{"0","1","2"}` e lista vazia no default do preset;
+  round-trip com as novas chaves de grade.
 - `theme_manager_test`: troca de paleta com os menus abertos, marcas legíveis.
 - Build Debug/Release sem warnings e CTest completo em ambos. `--bench` Release
   mantém o protocolo de sete rodadas, primeira descartada, mediana das seis.
